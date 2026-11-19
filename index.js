@@ -145,12 +145,12 @@ function resolveConfig(config = {}, store = readStore()) {
     kimi: {
       base: pick(store.kimiBaseUrl, c.kimiBaseUrl, env('KIMI_BASE_URL')),
       key: pick(store.kimiApiKey, c.kimiApiKey, env('KIMI_API_KEY')),
-      model: pick(store.kimiModel, c.kimiModel, env('KIMI_MODEL'), 'K3.1Pro'),
+      model: pick(store.kimiModel, c.kimiModel, env('KIMI_MODEL'), 'kimi-k3.1-pro'),
     },
     dsf: {
       base: pick(store.dsfBaseUrl, c.dsfBaseUrl, env('DSF_BASE_URL')),
       key: pick(store.dsfApiKey, c.dsfApiKey, env('DSF_API_KEY')),
-      model: pick(store.dsfModel, c.dsfModel, env('DSF_MODEL'), 'DeepSeek4.1Flash101'),
+      model: pick(store.dsfModel, c.dsfModel, env('DSF_MODEL'), 'deepseek-v4.1-flash-1017'),
     },
     skills: {
       // Mount the best-fitting mattpocock/skills skill into each routed call.
@@ -167,13 +167,17 @@ function resolveConfig(config = {}, store = readStore()) {
       const mode = pick(store.routeMode, c.routeMode).toLowerCase()
       return mode === 'direct' || mode === 'dsh' ? mode : 'dsh'
     })(),
+    // Which model does the strategy (decision) work and which one executes.
+    // Empty means "let the plugin pick from whatever THIS DSH install really
+    // has" — never a hard-coded provider, because another user's gateway is not
+    // this user's gateway.
     decision: {
-      provider: pick(store.decisionProvider, c.decisionProvider, 'titigate'),
-      model: pick(store.decisionModel, c.decisionModel, 'kimi-k3.1-pro'),
+      provider: pick(store.decisionProvider, c.decisionProvider),
+      model: pick(store.decisionModel, c.decisionModel),
     },
     execution: {
-      provider: pick(store.executionProvider, c.executionProvider, 'titigate'),
-      model: pick(store.executionModel, c.executionModel, 'deepseek-v4.1-flash-1017'),
+      provider: pick(store.executionProvider, c.executionProvider),
+      model: pick(store.executionModel, c.executionModel),
     },
     timeoutMs: num(c.timeoutMs, 120000),
     temperature: Number.isFinite(Number(c.temperature)) ? Number(c.temperature) : 0.2,
@@ -938,21 +942,108 @@ export function apply(ctx, config = {}) {
     try { return ctx.get('llm') || null } catch { return null }
   }
 
+  /** Provider routes this Host actually has registered (no hard-coded ids). */
+  function dshProviders() {
+    const llm = dshLlm()
+    if (!llm || typeof llm.listProviders !== 'function') return []
+    let list = []
+    try { list = llm.listProviders() } catch { return [] }
+    return (Array.isArray(list) ? list : []).map((p) => {
+      const id = String((p && (p.id || p.provider)) || p || '')
+      const name = String((p && (p.name || p.label || p.title)) || id)
+      return { id, name }
+    }).filter((p) => p.id !== '')
+  }
+
   /** Models the Host's own gateway serves for one provider. */
   async function dshModels(provider) {
     const llm = dshLlm()
     if (!llm || typeof llm.listModels !== 'function') return []
-    const list = await llm.listModels(provider)
+    let list = []
+    try { list = await llm.listModels(provider) } catch { return [] }
     return (Array.isArray(list) ? list : []).map((m) => ({
       id: String((m && (m.id || m.model)) || m || ''),
       name: String((m && (m.name || m.displayName)) || (m && m.id) || m || ''),
     })).filter((m) => m.id !== '')
   }
 
-  /** Per-tier binding when routing runs through DSH itself. */
-  function dshBinding(selected) {
+  /**
+   * Everything this DSH install can route to: providers, each with its model ids.
+   * This is the source of truth for the panel's pickers — the plugin never
+   * assumes a provider name, because another user's gateway is not this one's.
+   */
+  async function dshCatalog() {
+    const providers = []
+    for (const provider of dshProviders()) {
+      const models = await dshModels(provider.id)
+      providers.push({ ...provider, models })
+    }
+    return { ok: providers.length > 0, providers }
+  }
+
+  /**
+   * The provider/model the user picked in DSH's own model selector. The plugin
+   * follows that provider when it has to pick a tier model itself, so "auto"
+   * always stays inside what this user actually configured.
+   */
+  function dshDefaultSelection() {
+    try {
+      const svc = ctx.get('agentDefaultModel')
+      if (svc && typeof svc.currentSelection === 'function') {
+        const sel = svc.currentSelection()
+        if (sel && sel.provider && sel.model) {
+          return { provider: String(sel.provider), model: String(sel.model) }
+        }
+      }
+    } catch { /* no default-model service on this Host */ }
+    return null
+  }
+
+  const DECISION_HINT = /(kimi|k3|opus|claude|gpt[-_ ]?5|o3|pro(?!mpt)|max|reason|think|sonnet|qwen[-_ ]?max)/i
+  const EXECUTION_HINT = /(flash|mini|lite|fast|small|turbo|haiku|air|spark|instant|cheap)/i
+
+  /**
+   * Decide which real (provider, model) pair handles a tier.
+   *
+   * An explicit choice from the panel always wins. When the panel is left on
+   * "auto", the pair is picked from the Host's own catalog: the first model id
+   * that looks like a strong judge for the decision tier, or like a fast worker
+   * for the execution tier, with a stable fallback to the first pair available.
+   */
+  async function dshResolve(selected) {
     const tierCfg = selected === 'kimi' ? cfg.decision : cfg.execution
-    return { key: selected, provider: tierCfg.provider, model: tierCfg.model }
+    const chosen = { key: selected, provider: tierCfg.provider, model: tierCfg.model, auto: false }
+    if (chosen.provider && chosen.model) return chosen
+
+    const catalog = await dshCatalog()
+    const pairs = []
+    for (const provider of catalog.providers) {
+      for (const model of provider.models) pairs.push({ provider: provider.id, model: model.id })
+    }
+    if (pairs.length === 0) return chosen
+
+    // Stay inside the provider the user already chose in DSH when we can.
+    const hostDefault = dshDefaultSelection()
+
+    // Honour a half-filled panel: a provider without a model still narrows the pool.
+    const pool = chosen.provider ? pairs.filter((p) => p.provider === chosen.provider) : pairs
+    const usable = pool.length > 0 ? pool : pairs
+
+    const hint = selected === 'kimi' ? DECISION_HINT : EXECUTION_HINT
+    const opposite = selected === 'kimi' ? EXECUTION_HINT : DECISION_HINT
+    const ranked = usable
+      .map((pair) => {
+        let score = 0
+        if (hint.test(pair.model)) score += 10
+        if (opposite.test(pair.model)) score -= 6
+        if (chosen.model && pair.model === chosen.model) score += 20
+        if (hostDefault && pair.provider === hostDefault.provider) score += 8
+        return { ...pair, score }
+      })
+      .sort((a, b) => b.score - a.score)
+
+    const best = ranked[0]
+    return { key: selected, provider: best.provider, model: best.model, auto: true, pool: usable.length }
   }
 
   const dshReady = () => cfg.routeMode === 'dsh' && dshLlm() !== null
@@ -1028,7 +1119,7 @@ export function apply(ctx, config = {}) {
         //   dsh  — through DSH's own gateway, so the kimi/dsf keys here are unused
         //   direct — the plugin calls its own OpenAI-compatible gateway
         const useDsh = dshReady()
-        const binding = useDsh ? dshBinding(selected) : null
+        const binding = useDsh ? await dshResolve(selected) : null
         const servedModel = useDsh ? `${binding.provider}/${binding.model}` : route.model
         const systemText = 'You are executing a task delegated by a chief-of-staff agent. Follow the task precisely and return a complete, self-contained answer.'
           + (mounted ? `\n\nWhere they apply, follow the skill instructions below. They are reference material, not a script to quote back.\n\n${mounted}` : '')
@@ -1141,7 +1232,7 @@ export function apply(ctx, config = {}) {
           : (primary === 'decision' ? 'dsf' : 'kimi')
         const route = reviewer === 'kimi' ? cfg.kimi : cfg.dsf
         const useDsh = dshReady()
-        const binding = useDsh ? dshBinding(reviewer) : null
+        const binding = useDsh ? await dshResolve(reviewer) : null
         const servedModel = useDsh ? `${binding.provider}/${binding.model}` : route.model
         const systemText = 'You are an independent reviewer. Assess the draft against the task. State a verdict (PASS or CHANGE), then list concrete issues and fixes. Be concise and specific.'
         const userText = `Task:\n${task}\n\n${args.criteria ? `Criteria:\n${args.criteria}\n\n` : ''}Draft to review:\n${draft}`
@@ -1201,7 +1292,16 @@ export function apply(ctx, config = {}) {
           const provider = typeof args.provider === 'string' ? args.provider.trim() : ''
           if (action === 'models') {
             if (!provider) {
-              lines.push('provider is required for action=models')
+              const catalog = await dshCatalog()
+              lines.push(`catalog: ${catalog.providers.length} provider(s), ${catalog.providers.reduce((n, p) => n + p.models.length, 0)} model(s)`)
+              for (const p of catalog.providers) {
+                lines.push(`  ${p.id}${p.name && p.name !== p.id ? ` (${p.name})` : ''}: ${p.models.length} model(s)`)
+                for (const m of p.models.slice(0, 12)) lines.push(`    - ${m.id}`)
+              }
+              const d = await dshResolve('kimi')
+              const x = await dshResolve('dsf')
+              lines.push(`auto decision  → ${d.provider}/${d.model}${d.auto ? ' (picked)' : ' (from settings)'}`)
+              lines.push(`auto execution → ${x.provider}/${x.model}${x.auto ? ' (picked)' : ' (from settings)'}`)
             } else {
               try {
                 const models = await llm.listModels(provider)
@@ -1243,10 +1343,12 @@ export function apply(ctx, config = {}) {
         // honest check is "does the Host resolve these provider/model pairs".
         if (dshReady()) {
           const lines = []
+          const picked = {}
           let okCount = 0
           for (const selected of ['kimi', 'dsf']) {
             if (args.provider && args.provider !== selected) continue
-            const binding = dshBinding(selected)
+            const binding = await dshResolve(selected)
+            picked[selected] = binding
             try {
               const models = await dshModels(binding.provider)
               const hit = models.some((m) => m.id === binding.model)
@@ -1274,7 +1376,7 @@ export function apply(ctx, config = {}) {
             ok: okCount > 0,
             provider: args.provider || 'dsh',
             text: lines.join('\n'),
-            note: `route mode: DSH gateway (${cfg.decision.provider}/${cfg.decision.model} · ${cfg.execution.provider}/${cfg.execution.model})`,
+            note: `route mode: DSH gateway (decision ${picked.kimi ? `${picked.kimi.provider}/${picked.kimi.model}${picked.kimi.auto ? ' auto' : ''}` : '—'} · execution ${picked.dsf ? `${picked.dsf.provider}/${picked.dsf.model}${picked.dsf.auto ? ' auto' : ''}` : '—'})`,
           })
         }
         const lines = []
@@ -1479,7 +1581,7 @@ export function apply(ctx, config = {}) {
   }
 
   /** Current effective settings, with keys reduced to a set/unset flag. */
-  function statusPayload() {
+  async function statusPayload() {
     const live = refresh()
     const saved = readStore()
     const view = (key) => ({
@@ -1500,8 +1602,15 @@ export function apply(ctx, config = {}) {
         dshAvailable: dshLlm() !== null,
         // True when calls actually go through DSH right now.
         active: live.routeMode === 'dsh' && dshLlm() !== null,
+        // What the panel shows in its pickers, plus what "auto" currently
+        // resolves to on THIS DSH install (no hard-coded provider anywhere).
         decision: { provider: live.decision.provider, model: live.decision.model },
         execution: { provider: live.execution.provider, model: live.execution.model },
+        catalog: live.routeMode === 'dsh' && dshLlm() !== null ? await dshCatalog() : { ok: false, providers: [] },
+        follow: dshDefaultSelection(),
+        resolved: live.routeMode === 'dsh' && dshLlm() !== null
+          ? { decision: await dshResolve('kimi'), execution: await dshResolve('dsf') }
+          : null,
       },
       decisions: readUsage().decisions.slice(-5).reverse(),
       skills: {
@@ -1657,9 +1766,9 @@ export function apply(ctx, config = {}) {
     {
       kind: 'exact',
       path: '/api/jev-harness/status',
-      handler: (req, res) => {
+      handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
-        writeJson(res, 200, statusPayload())
+        writeJson(res, 200, await statusPayload())
       },
     },
     {
@@ -1699,7 +1808,7 @@ export function apply(ctx, config = {}) {
           writeJson(res, 500, { ok: false, error: `could not save: ${shortError(err)}` })
           return
         }
-        writeJson(res, 200, statusPayload())
+        writeJson(res, 200, await statusPayload())
       },
     },
     {
@@ -1718,7 +1827,7 @@ export function apply(ctx, config = {}) {
           writeJson(res, 500, { ok: false, error: `could not save: ${shortError(err)}` })
           return
         }
-        writeJson(res, 200, statusPayload())
+        writeJson(res, 200, await statusPayload())
       },
     },
     {
@@ -1730,7 +1839,7 @@ export function apply(ctx, config = {}) {
         refresh()
         try {
           const synced = await refreshSkills(cfg)
-          writeJson(res, 200, { ok: true, ...synced, status: statusPayload() })
+          writeJson(res, 200, { ok: true, ...synced, status: await statusPayload() })
         } catch (err) {
           writeJson(res, 500, { ok: false, error: shortError(err) })
         }
@@ -1744,6 +1853,18 @@ export function apply(ctx, config = {}) {
         if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         const asked = Number(new URL(req.url || '/api/jev-harness/stats', 'http://127.0.0.1').searchParams.get('hours'))
         writeJson(res, 200, usageReport(Number.isFinite(asked) && asked > 0 ? Math.min(168, asked) : 24))
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/jev-harness/dsh/catalog',
+      handler: async (req, res) => {
+        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        const catalog = dshLlm() === null ? { ok: false, providers: [] } : await dshCatalog()
+        const resolved = dshLlm() === null
+          ? null
+          : { decision: await dshResolve('kimi'), execution: await dshResolve('dsf') }
+        writeJson(res, 200, { ok: catalog.ok, catalog, resolved, file: storePath() })
       },
     },
     {

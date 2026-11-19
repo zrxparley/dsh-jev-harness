@@ -12,10 +12,11 @@
         dsfModel: 'deepseek-v4.1-flash-1017'
         jevModel: 'jev-latest'
         routeMode: 'dsh'
-        decisionProvider: 'titigate'
-        decisionModel: 'kimi-k3.1-pro'
-        executionProvider: 'titigate'
-        executionModel: 'deepseek-v4.1-flash-1017'
+        # 留空 = 自动从这台机器的 DSH 网关里挑（面板里可钉住）
+        decisionProvider: ''
+        decisionModel: ''
+        executionProvider: ''
+        executionModel: ''
         skillsAuto: true
         skillsRepo: 'mattpocock/skills'
         skillsRef: 'main'

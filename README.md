@@ -28,6 +28,14 @@ Two real paths once the switch is ON — pick one in the 执行方式 card:
 
 In DSH mode the plugin holds and uses no kimi/dsf credentials: the Host already owns provider credentials, so the plugin only decides the tier and hands the work over. Tier provider/model are editable in the panel, and 「列出 DSH 模型」 asks the Host which ids exist.
 
+## Where the models come from: your own DSH gateway
+
+The plugin does not pick providers for you. Both dropdowns are filled from what this machine's DSH actually registered (`ctx.llm.listProviders()` / `listModels()`) — you have `titigate`, somebody else has theirs, and each install lists its own.
+
+- **Auto (default)**: stay inside the provider your DSH model selector points at, then rank by model name — judge-like ids (`kimi / k3 / pro / max / reason`) for the decision tier, fast ids (`flash / mini / lite / fast`) for execution. The resulting pair is printed on the card (`现在会用到：titigate/kimi-k3.1-pro`).
+- **Pin it**: choose an explicit provider + model in the dropdowns.
+- 「刷新模型清单」 re-reads the list from DSH at any time.
+
 ## Traffic dashboard
 
 The top of the settings page is a live per-gateway dashboard:
