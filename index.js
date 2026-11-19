@@ -257,35 +257,63 @@ function recordUsage(event) {
 function usageReport(hours = 24) {
   const usage = readUsage()
   const pad = (n) => String(n).padStart(2, '0')
-  const now = new Date()
-  now.setMinutes(0, 0, 0)
+  const dayGrain = hours > USAGE_HOURS
   const buckets = []
-  for (let i = hours - 1; i >= 0; i--) {
-    const at = new Date(now.getTime() - i * 3600000)
-    const key = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}`
-    const row = { key, label: `${pad(at.getHours())}:00`, day: `${pad(at.getMonth() + 1)}/${pad(at.getDate())}`, gateways: {} }
-    const source = usage.hours[key] || {}
-    for (const gateway of ['jev', 'kimi', 'dsf']) {
-      const bucket = source[gateway] || emptyBucket()
-      row.gateways[gateway] = {
-        calls: bucket.calls || 0,
-        tokens: (bucket.promptTokens || 0) + (bucket.completionTokens || 0),
-        fail: bucket.fail || 0,
+  const source = (key) => (dayGrain ? usage.days[key] : usage.hours[key]) || {}
+
+  if (dayGrain) {
+    // Hourly buckets are only retained for USAGE_HOURS, so a multi-day window
+    // must be built from the daily rollups or the older days read as zero.
+    const days = Math.max(1, Math.ceil(hours / 24))
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    for (let i = days - 1; i >= 0; i--) {
+      const at = new Date(today.getTime() - i * 86400000)
+      const key = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+      const row = { key, label: `${pad(at.getMonth() + 1)}/${pad(at.getDate())}`, day: `${pad(at.getMonth() + 1)}/${pad(at.getDate())}`, gateways: {} }
+      const from = source(key)
+      for (const gateway of ['jev', 'kimi', 'dsf']) {
+        const bucket = from[gateway] || emptyBucket()
+        row.gateways[gateway] = {
+          calls: bucket.calls || 0,
+          tokens: (bucket.promptTokens || 0) + (bucket.completionTokens || 0),
+          fail: bucket.fail || 0,
+        }
       }
+      buckets.push(row)
     }
-    buckets.push(row)
+  } else {
+    const now = new Date()
+    now.setMinutes(0, 0, 0)
+    for (let i = hours - 1; i >= 0; i--) {
+      const at = new Date(now.getTime() - i * 3600000)
+      const key = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}`
+      const row = { key, label: `${pad(at.getHours())}:00`, day: `${pad(at.getMonth() + 1)}/${pad(at.getDate())}`, gateways: {} }
+      const from = source(key)
+      for (const gateway of ['jev', 'kimi', 'dsf']) {
+        const bucket = from[gateway] || emptyBucket()
+        row.gateways[gateway] = {
+          calls: bucket.calls || 0,
+          tokens: (bucket.promptTokens || 0) + (bucket.completionTokens || 0),
+          fail: bucket.fail || 0,
+        }
+      }
+      buckets.push(row)
+    }
   }
+
   const totals = {}
   let worst = 0
   for (const gateway of ['jev', 'kimi', 'dsf']) {
     const total = emptyBucket()
     for (const bucket of buckets) {
       const entry = bucket.gateways[gateway]
+      const raw = source(bucket.key)[gateway] || emptyBucket()
       total.calls += entry.calls
       total.fail += entry.fail
-      total.promptTokens += (usage.hours[bucket.key]?.[gateway]?.promptTokens) || 0
-      total.completionTokens += (usage.hours[bucket.key]?.[gateway]?.completionTokens) || 0
-      total.ms += (usage.hours[bucket.key]?.[gateway]?.ms) || 0
+      total.promptTokens += raw.promptTokens || 0
+      total.completionTokens += raw.completionTokens || 0
+      total.ms += raw.ms || 0
     }
     total.ok = total.calls - total.fail
     totals[gateway] = {
@@ -299,6 +327,7 @@ function usageReport(hours = 24) {
     }
     worst = Math.max(worst, total.calls)
   }
+
   const today = usage.days[new Date().toISOString().slice(0, 10)] || {}
   const todayTotals = {}
   for (const gateway of ['jev', 'kimi', 'dsf']) {
@@ -313,6 +342,7 @@ function usageReport(hours = 24) {
     ok: true,
     generatedAt: new Date().toISOString(),
     windowHours: hours,
+    grain: dayGrain ? 'day' : 'hour',
     peak: worst,
     file: usagePath(),
     buckets,
