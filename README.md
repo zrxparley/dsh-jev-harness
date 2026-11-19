@@ -1,17 +1,32 @@
 # JEV Tiered Harness
 
-A self-contained plugin for [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) that routes tasks to different models by tier — without configuring DSH providers or authorizing model routes.
+A self-contained DeepSeek Harness plugin: **one switch** decides who does the work in a session. While it is ON, every instruction you send is first read by a JEV judge, which picks the tier and routes the work to Kimi (judgment) or DeepSeek Flash (execution). **You never choose a tier — and there is no tier UI to choose from.**
 
-## What it does
+No provider configuration and no route authorization in DSH are required.
+
+## Where it shows up
+
+| Location | What it does |
+| --- | --- |
+| Left sidebar entry | "JEV 分级调度" panel: master switch + base URL / API key / model id per gateway + connectivity test |
+| Composer switch | One-click ON/OFF, effective immediately |
+| Settings → Plugins → global plugin card | The same configuration page |
+
+**Master switch**
+
+- **ON** — the harness owns routing: JEV judges each instruction, then Kimi or DeepSeek Flash produces the answer; DSH's own model selector is not part of the path.
+- **OFF** — the harness steps aside completely and everything falls back to DSH's own model gateway.
+
+## Tools
 
 | Tool | Purpose |
 | --- | --- |
-| `harness_call` | Main entry. `tier=decision` → Kimi K3.1Pro, `tier=execution` → DeepSeek4.1Flash101, `tier=auto` → auto-classify |
-| `harness_classify` | Tier decision only, no execution |
+| `harness_call` | The entry point, `tier=auto` by default: JEV judges, then Kimi / DeepSeek Flash answers |
+| `harness_classify` | Ask what tier the judge would pick, without executing (diagnostics) |
 | `harness_review` | Second-model quality gate: decision drafts reviewed by Flash, execution drafts by Kimi |
-| `harness_probe` | Probe gateway connectivity and discover real model ids via OpenAI-compatible `GET /models` |
+| `harness_probe` | Probe gateway reachability and discover real model ids via OpenAI-compatible `GET /models` |
 
-Tier rule: **does a human need to judge right/wrong?** → `decision` (Kimi); mechanical execution → `execution` (Flash). Auto classification calls the JEV gateway when configured, otherwise uses a local keyword heuristic (ties go to the quality tier).
+Tier rule: *does a human need to judge whether this is right?* → decision (Kimi); mechanical execution → execution (Flash). Without a JEV gateway the plugin falls back to a local keyword heuristic, ties going to decision.
 
 ## Install
 
@@ -19,29 +34,23 @@ Tier rule: **does a human need to judge right/wrong?** → `decision` (Kimi); me
 dsh plugin add @zrxparley/dsh-jev-harness
 ```
 
-Or in DSH: Settings → Plugins → Add plugin, and search for `@zrxparley/dsh-jev-harness`.
+Or DSH Settings → Plugins → Add plugin → search `@zrxparley/dsh-jev-harness`.
 
 ## Configure
 
-In the plugin settings:
+Fill the in-plugin settings panel (written to `~/.dsh/jev-harness.json`, mode 0600 — keys never enter the repo or the config file):
 
-- `jevBaseUrl` / `kimiBaseUrl` / `dsfBaseUrl` — base URLs of the three OpenAI-compatible gateways (may include `/v1`; the plugin appends `/chat/completions`)
-- `kimiModel` / `dsfModel` / `jevModel` — exact model ids (defaults are marketing names; **run `harness_probe` and replace with the real ids**)
-- `timeoutMs`, `temperature`
+- `kimiBaseUrl` / `kimiApiKey` / `kimiModel` — decision tier, e.g. `https://your-gateway/v1` + `kimi-k3.1-pro`
+- `dsfBaseUrl` / `dsfApiKey` / `dsfModel` — execution tier, e.g. `https://your-gateway/v1` + `deepseek-v4.1-flash-1017`
+- `jevBaseUrl` / `jevApiKey` / `jevModel` — the judge, a TypeSafe-compatible `/v1/systemone`
 
-API keys are read from environment variables (never written to disk):
+> Use the gateway's **real** model ids, not marketing names. "Test connectivity" lists the ids the gateway actually serves.
 
-```
-JEV_API_KEY=...
-KIMI_API_KEY=...
-DSF_API_KEY=...
-```
+Environment variables work as a fallback: `KIMI_API_KEY` / `DSF_API_KEY` / `JEV_API_KEY`, plus `*_BASE_URL` / `*_MODEL`.
 
-`JEV_BASE_URL` / `KIMI_BASE_URL` / `DSF_BASE_URL` / `JEV_MODEL` / `KIMI_MODEL` / `DSF_MODEL` are also honored as config fallbacks.
+## Note
 
-## Verify
-
-Call `harness_probe` after setup. It reports each gateway as reachable / misconfigured / unreachable and lists available model ids, so you can copy the exact id into the settings.
+`deepseek-v4.1-flash-1017` is a reasoning model, so its thinking spends the completion budget. On empty content the result carries `reasoningTokens` and suggests retrying with `maxTokens` around 600–1200.
 
 ## License
 

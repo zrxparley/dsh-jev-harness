@@ -1,12 +1,15 @@
 - insert:
     - id: jev-harness
-      name: '@zrxparley/dsh-jev-harness'
+      name: '@local/jev-harness'
       config:
         jevBaseUrl: ''
         kimiBaseUrl: ''
         dsfBaseUrl: ''
+        jevApiKey: ''
+        kimiApiKey: ''
+        dsfApiKey: ''
         kimiModel: 'K3.1Pro'
         dsfModel: 'DeepSeek4.1Flash101'
-        jevModel: ''
+        jevModel: 'jev-latest'
         timeoutMs: 120000
         temperature: 0.2

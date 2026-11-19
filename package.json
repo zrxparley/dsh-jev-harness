@@ -1,7 +1,7 @@
 {
   "name": "@zrxparley/dsh-jev-harness",
-  "version": "1.0.0",
-  "description": "Tiered LLM harness for DeepSeek Harness: decision and quality tasks go to Kimi K3.1Pro, routine execution goes to DeepSeek4.1Flash101, through OpenAI-compatible gateways.",
+  "version": "1.4.0",
+  "description": "Tiered LLM harness for DeepSeek Harness: one switch, JEV decides every task, then Kimi K3.1 Pro handles judgment and DeepSeek 4.1 Flash handles execution, via OpenAI-compatible gateways.",
   "type": "module",
   "license": "MIT",
   "author": "zrxparley",
@@ -25,12 +25,14 @@
   ],
   "exports": {
     ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg",
-    "./package.json": "./package.json"
+    "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
+    "lib/client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "docs",
@@ -43,6 +45,16 @@
     "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ],
+      "platform": "web"
     }
   },
   "publishConfig": {
