@@ -160,6 +160,168 @@ function resolveConfig(config = {}, store = readStore()) {
   }
 }
 
+/* ------------------------------------------------------------- usage ledger */
+
+/**
+ * Traffic accounting. Every outbound gateway call lands here so the settings
+ * panel can show what actually moved: per-hour buckets for the last 48 hours,
+ * per-day totals for the last 30 days, plus the most recent calls verbatim.
+ * The ledger is small (a few KB) and lives beside the settings file.
+ */
+const USAGE_VERSION = 1
+const USAGE_HOURS = 48
+const USAGE_DAYS = 30
+const USAGE_RECENT = 40
+
+function usagePath() {
+  const home = String(process.env.DSH_HOME || '').trim() || path.join(os.homedir(), '.dsh')
+  return path.join(home, 'jev-harness-usage.json')
+}
+
+function emptyBucket() {
+  return { calls: 0, ok: 0, fail: 0, promptTokens: 0, completionTokens: 0, ms: 0 }
+}
+
+function emptyUsage() {
+  return { version: USAGE_VERSION, hours: {}, days: {}, recent: [] }
+}
+
+function readUsage() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(usagePath(), 'utf8'))
+    if (!parsed || typeof parsed !== 'object') return emptyUsage()
+    return {
+      version: USAGE_VERSION,
+      hours: parsed.hours && typeof parsed.hours === 'object' ? parsed.hours : {},
+      days: parsed.days && typeof parsed.days === 'object' ? parsed.days : {},
+      recent: Array.isArray(parsed.recent) ? parsed.recent : [],
+    }
+  } catch {
+    return emptyUsage()
+  }
+}
+
+function writeUsage(usage) {
+  try {
+    // Keep the ledger bounded: newest hours / days first, then trim.
+    const hourKeys = Object.keys(usage.hours).sort()
+    while (hourKeys.length > USAGE_HOURS) delete usage.hours[hourKeys.shift()]
+    const dayKeys = Object.keys(usage.days).sort()
+    while (dayKeys.length > USAGE_DAYS) delete usage.days[dayKeys.shift()]
+    usage.recent = usage.recent.slice(-USAGE_RECENT)
+    fs.writeFileSync(usagePath(), JSON.stringify(usage), { mode: 0o600 })
+  } catch { /* accounting must never break a call */ }
+}
+
+function bumpBucket(target, event) {
+  if (!target) return
+  target.calls = (target.calls || 0) + 1
+  if (event.ok) target.ok = (target.ok || 0) + 1
+  else target.fail = (target.fail || 0) + 1
+  target.promptTokens = (target.promptTokens || 0) + (event.promptTokens || 0)
+  target.completionTokens = (target.completionTokens || 0) + (event.completionTokens || 0)
+  target.ms = (target.ms || 0) + (event.ms || 0)
+}
+
+/** Record one gateway call: hourly + daily buckets, plus the recent ring. */
+function recordUsage(event) {
+  try {
+    const at = new Date(event.at || Date.now())
+    const pad = (n) => String(n).padStart(2, '0')
+    const hourKey = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}`
+    const dayKey = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+    const usage = readUsage()
+    if (!usage.hours[hourKey]) usage.hours[hourKey] = {}
+    if (!usage.days[dayKey]) usage.days[dayKey] = {}
+    if (!usage.hours[hourKey][event.gateway]) usage.hours[hourKey][event.gateway] = emptyBucket()
+    if (!usage.days[dayKey][event.gateway]) usage.days[dayKey][event.gateway] = emptyBucket()
+    bumpBucket(usage.hours[hourKey][event.gateway], event)
+    bumpBucket(usage.days[dayKey][event.gateway], event)
+    usage.recent.push({
+      t: at.toISOString(),
+      g: event.gateway,
+      m: event.model || '',
+      tool: event.tool || '',
+      ok: Boolean(event.ok),
+      status: event.status || 0,
+      ms: Math.round(event.ms || 0),
+      pt: event.promptTokens || 0,
+      ct: event.completionTokens || 0,
+      error: event.error ? String(event.error).slice(0, 160) : '',
+    })
+    writeUsage(usage)
+  } catch { /* accounting must never break a call */ }
+}
+
+/** Shape the ledger for the panel: N hourly buckets, totals, recent calls. */
+function usageReport(hours = 24) {
+  const usage = readUsage()
+  const pad = (n) => String(n).padStart(2, '0')
+  const now = new Date()
+  now.setMinutes(0, 0, 0)
+  const buckets = []
+  for (let i = hours - 1; i >= 0; i--) {
+    const at = new Date(now.getTime() - i * 3600000)
+    const key = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}`
+    const row = { key, label: `${pad(at.getHours())}:00`, day: `${pad(at.getMonth() + 1)}/${pad(at.getDate())}`, gateways: {} }
+    const source = usage.hours[key] || {}
+    for (const gateway of ['jev', 'kimi', 'dsf']) {
+      const bucket = source[gateway] || emptyBucket()
+      row.gateways[gateway] = {
+        calls: bucket.calls || 0,
+        tokens: (bucket.promptTokens || 0) + (bucket.completionTokens || 0),
+        fail: bucket.fail || 0,
+      }
+    }
+    buckets.push(row)
+  }
+  const totals = {}
+  let worst = 0
+  for (const gateway of ['jev', 'kimi', 'dsf']) {
+    const total = emptyBucket()
+    for (const bucket of buckets) {
+      const entry = bucket.gateways[gateway]
+      total.calls += entry.calls
+      total.fail += entry.fail
+      total.promptTokens += (usage.hours[bucket.key]?.[gateway]?.promptTokens) || 0
+      total.completionTokens += (usage.hours[bucket.key]?.[gateway]?.completionTokens) || 0
+      total.ms += (usage.hours[bucket.key]?.[gateway]?.ms) || 0
+    }
+    total.ok = total.calls - total.fail
+    totals[gateway] = {
+      calls: total.calls,
+      ok: total.ok,
+      fail: total.fail,
+      promptTokens: total.promptTokens,
+      completionTokens: total.completionTokens,
+      tokens: total.promptTokens + total.completionTokens,
+      avgMs: total.calls > 0 ? Math.round(total.ms / total.calls) : 0,
+    }
+    worst = Math.max(worst, total.calls)
+  }
+  const today = usage.days[new Date().toISOString().slice(0, 10)] || {}
+  const todayTotals = {}
+  for (const gateway of ['jev', 'kimi', 'dsf']) {
+    const bucket = today[gateway] || emptyBucket()
+    todayTotals[gateway] = {
+      calls: bucket.calls || 0,
+      fail: bucket.fail || 0,
+      tokens: (bucket.promptTokens || 0) + (bucket.completionTokens || 0),
+    }
+  }
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    windowHours: hours,
+    peak: worst,
+    file: usagePath(),
+    buckets,
+    totals,
+    today: todayTotals,
+    recent: usage.recent.slice(-20).reverse(),
+  }
+}
+
 /* ----------------------------------------------------------------- routing */
 
 /**
@@ -232,7 +394,9 @@ async function chat(route, messages, opts, cfg, exec) {
   if (!url) throw new Error(`no base URL configured for ${opts.provider}; set it in plugin settings or ${opts.provider.toUpperCase()}_BASE_URL`)
   const temperature = Number.isFinite(opts.temperature) ? opts.temperature : cfg.temperature
 
+  let startedAt = 0
   const send = async (keepTemperature) => {
+    startedAt = Date.now()
     const link = combineSignal(cfg.timeoutMs, exec?.signal)
     try {
       const res = await fetch(url, {
@@ -251,7 +415,7 @@ async function chat(route, messages, opts, cfg, exec) {
         signal: link.signal,
       })
       const raw = await res.text()
-      return { res, raw }
+      return { res, raw, startedAt }
     } finally {
       link.dispose()
     }
@@ -264,9 +428,31 @@ async function chat(route, messages, opts, cfg, exec) {
   if (!res.ok && res.status === 400 && /temperature/i.test(raw)) {
     ;({ res, raw } = await send(false))
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status} from ${opts.provider}: ${raw.slice(0, 500)}`)
+  if (!res.ok) {
+    recordUsage({
+      gateway: opts.provider,
+      model: route.model,
+      tool: opts.tool || 'call',
+      ok: false,
+      status: res.status,
+      ms: Date.now() - startedAt,
+      error: raw.slice(0, 160),
+    })
+    throw new Error(`HTTP ${res.status} from ${opts.provider}: ${raw.slice(0, 500)}`)
+  }
   let body
   try { body = JSON.parse(raw) } catch { throw new Error(`non-JSON response from ${opts.provider}: ${raw.slice(0, 300)}`) }
+  const usageTotals = body?.usage || {}
+  recordUsage({
+    gateway: opts.provider,
+    model: route.model,
+    tool: opts.tool || 'call',
+    ok: true,
+    status: res.status,
+    ms: Date.now() - startedAt,
+    promptTokens: Number(usageTotals.prompt_tokens) || 0,
+    completionTokens: Number(usageTotals.completion_tokens) || 0,
+  })
   const message = body?.choices?.[0]?.message || {}
   const text = message.content
   const reasoning = message.reasoning_content || message.reasoning
@@ -348,6 +534,7 @@ export function apply(ctx, config = {}) {
 
   async function decideTier(task, context) {
     if (cfg.jev.base) {
+      const startedAt = Date.now()
       try {
         // The JEV gateway is not an OpenAI chat endpoint: it exposes a single
         // POST /v1/systemone that answers typed questions (noul / choice /
@@ -387,6 +574,12 @@ export function apply(ctx, config = {}) {
         if (!res.ok) throw new Error(`HTTP ${res.status}: ${raw.slice(0, 200)}`)
         const body = JSON.parse(raw)
         const answer = body && body.answers && body.answers.tier
+        recordUsage({
+          gateway: 'jev', model: cfg.jev.model, tool: 'classify', ok: true, status: res.status,
+          ms: Date.now() - startedAt,
+          promptTokens: Number(body?.usage?.input_tokens) || 0,
+          completionTokens: Number(body?.usage?.output_tokens) || 0,
+        })
         const choice = answer && (answer.choice || answer.noul)
         const tier = choice === 'decision' || choice === 'execution' ? choice : undefined
         if (tier) {
@@ -399,6 +592,10 @@ export function apply(ctx, config = {}) {
         }
         return { tier: heuristicTier(task).tier, reason: 'jev returned no usable choice; used heuristic' }
       } catch (err) {
+        recordUsage({
+          gateway: 'jev', model: cfg.jev.model, tool: 'classify', ok: false, status: 0,
+          ms: Date.now() - startedAt, error: shortError(err),
+        })
         return { tier: heuristicTier(task).tier, reason: `jev router failed (${shortError(err)}); used heuristic` }
       }
     }
@@ -505,6 +702,7 @@ export function apply(ctx, config = {}) {
     for (const skill of catalog.skills) {
       criteria[skill.id] = `${skill.description.slice(0, 240)}`
     }
+    const startedAt = Date.now()
     try {
       const base = String(cfg2.jev.base).replace(/\/+$/, '')
       const url = /\/v1$/.test(base) ? `${base}/systemone` : `${base}/v1/systemone`
@@ -536,6 +734,12 @@ export function apply(ctx, config = {}) {
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${raw.slice(0, 160)}`)
       const body = JSON.parse(raw)
+      recordUsage({
+        gateway: 'jev', model: cfg2.jev.model, tool: 'skill-pick', ok: true, status: res.status,
+        ms: Date.now() - startedAt,
+        promptTokens: Number(body?.usage?.input_tokens) || 0,
+        completionTokens: Number(body?.usage?.output_tokens) || 0,
+      })
       const answer = body?.answers?.skill
       const choice = answer && (answer.choice || answer.noul)
       if (choice && (choice === SKILL_NONE || skillById(choice))) {
@@ -549,6 +753,10 @@ export function apply(ctx, config = {}) {
       }
       return heuristicSkill(task)
     } catch (err) {
+      recordUsage({
+        gateway: 'jev', model: cfg2.jev.model, tool: 'skill-pick', ok: false, status: 0,
+        ms: Date.now() - startedAt, error: shortError(err),
+      })
       const fallback = heuristicSkill(task)
       return { ...fallback, reason: `jev skill judge failed (${shortError(err)}); ${fallback.reason}` }
     }
@@ -631,7 +839,7 @@ export function apply(ctx, config = {}) {
             { role: 'system', content: 'You are executing a task delegated by a chief-of-staff agent. Follow the task precisely and return a complete, self-contained answer.'
               + (mounted ? `\n\nWhere they apply, follow the skill instructions below. They are reference material, not a script to quote back.\n\n${mounted}` : '') },
             { role: 'user', content: args.context ? `Task:\n${task}\n\nContext:\n${args.context}` : task },
-          ], { provider: selected, temperature: args.temperature, maxTokens: args.maxTokens }, cfg, exec)
+          ], { provider: selected, tool: 'call', temperature: args.temperature, maxTokens: args.maxTokens }, cfg, exec)
           const emptyHint = !answer.text && answer.completionTokens > 0
             ? ` — empty content: the model spent ${answer.reasoningTokens || answer.completionTokens} of ${answer.completionTokens} completion tokens on reasoning and never reached an answer; retry with maxTokens around ${Math.max(600, (answer.reasoningTokens || answer.completionTokens) * 2)}`
             : ''
@@ -718,7 +926,7 @@ export function apply(ctx, config = {}) {
           const answer = await chat(route, [
             { role: 'system', content: 'You are an independent reviewer. Assess the draft against the task. State a verdict (PASS or CHANGE), then list concrete issues and fixes. Be concise and specific.' },
             { role: 'user', content: `Task:\n${task}\n\n${args.criteria ? `Criteria:\n${args.criteria}\n\n` : ''}Draft to review:\n${draft}` },
-          ], { provider: reviewer, temperature: 0.1 }, cfg, exec)
+          ], { provider: reviewer, tool: 'review', temperature: 0.1 }, cfg, exec)
           return result({
             ok: true,
             tier: primary,
@@ -761,6 +969,7 @@ export function apply(ctx, config = {}) {
             continue
           }
           const link = combineSignal(cfg.timeoutMs, exec?.signal)
+          const probeStartedAt = Date.now()
           try {
             const res = await fetch(url, {
               headers: route.key ? { authorization: `Bearer ${route.key}` } : {},
@@ -768,6 +977,7 @@ export function apply(ctx, config = {}) {
             })
             const raw = await res.text()
             if (!res.ok) {
+              recordUsage({ gateway: key, model: route.model, tool: 'probe', ok: false, status: res.status, ms: Date.now() - probeStartedAt, error: raw.slice(0, 120) })
               lines.push(`${key}: HTTP ${res.status} ${raw.slice(0, 200)}`)
               continue
             }
@@ -779,8 +989,10 @@ export function apply(ctx, config = {}) {
               ids = []
             }
             okCount += 1
+            recordUsage({ gateway: key, model: route.model, tool: 'probe', ok: true, status: res.status, ms: Date.now() - probeStartedAt })
             lines.push(`${key}: OK (configured model "${route.model}")${ids.length ? ` — served: ${ids.slice(0, 30).join(', ')}` : ''}`)
           } catch (err) {
+            recordUsage({ gateway: key, model: route.model, tool: 'probe', ok: false, status: 0, ms: Date.now() - probeStartedAt, error: shortError(err) })
             lines.push(`${key}: ERROR ${shortError(err)}`)
           } finally {
             link.dispose()
@@ -892,6 +1104,7 @@ export function apply(ctx, config = {}) {
     const route = cfg[key]
     const url = modelsUrl(route.base)
     if (!url) return { key, ok: false, detail: 'NOT CONFIGURED (no base URL)', models: [] }
+    const startedAt = Date.now()
     const link = combineSignal(cfg.timeoutMs, undefined)
     try {
       const res = await fetch(url, {
@@ -899,14 +1112,19 @@ export function apply(ctx, config = {}) {
         signal: link.signal,
       })
       const raw = await res.text()
-      if (!res.ok) return { key, ok: false, detail: `HTTP ${res.status} ${raw.slice(0, 200)}`, models: [] }
+      if (!res.ok) {
+        recordUsage({ gateway: key, model: route.model, tool: 'probe', ok: false, status: res.status, ms: Date.now() - startedAt, error: raw.slice(0, 120) })
+        return { key, ok: false, detail: `HTTP ${res.status} ${raw.slice(0, 200)}`, models: [] }
+      }
       let models = []
       try {
         const body = JSON.parse(raw)
         models = (Array.isArray(body?.data) ? body.data : []).map(model => model?.id).filter(Boolean)
       } catch { models = [] }
+      recordUsage({ gateway: key, model: route.model, tool: 'probe', ok: true, status: res.status, ms: Date.now() - startedAt })
       return { key, ok: true, detail: `configured model "${route.model}"`, models }
     } catch (err) {
+      recordUsage({ gateway: key, model: route.model, tool: 'probe', ok: false, status: 0, ms: Date.now() - startedAt, error: shortError(err) })
       return { key, ok: false, detail: shortError(err), models: [] }
     } finally {
       link.dispose()
@@ -1178,6 +1396,16 @@ export function apply(ctx, config = {}) {
         } catch (err) {
           writeJson(res, 500, { ok: false, error: shortError(err) })
         }
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/jev-harness/stats',
+      handler: async (req, res) => {
+        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        const asked = Number(new URL(req.url || '/api/jev-harness/stats', 'http://127.0.0.1').searchParams.get('hours'))
+        writeJson(res, 200, usageReport(Number.isFinite(asked) && asked > 0 ? Math.min(168, asked) : 24))
       },
     },
     {

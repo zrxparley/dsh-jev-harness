@@ -17,6 +17,21 @@ No provider configuration and no route authorization in DSH are required.
 - **ON** — the harness owns routing: JEV judges each instruction, then Kimi or DeepSeek Flash produces the answer; DSH's own model selector is not part of the path.
 - **OFF** — the harness steps aside completely and everything falls back to DSH's own model gateway.
 
+## Traffic dashboard
+
+The top of the settings page is a live per-gateway dashboard:
+
+| Metric | Meaning |
+| --- | --- |
+| Requests | one per real HTTP call to a gateway (probes and failures included) |
+| Tokens | the gateway's own `usage`; failed calls count 0 |
+| Success rate / latency | accumulated over the selected window, latency averaged |
+| Bars | hourly for the last 24h, daily for the last 7d, grouped by gateway; hover for exact values |
+
+Three gateways, three traffic kinds: `JEV judge` (`/systemone`), `Kimi decision`, `DSF execution`. It refreshes every 10 seconds.
+
+The ledger lives at `<DSH_HOME>/jev-harness-usage.json` (default `~/.dsh/jev-harness-usage.json`), accumulated hourly and daily so it survives restarts; only counts, tokens and latency are stored, never prompt text.
+
 ## Skill routing · mattpocock/skills
 
 With "auto-mount skill" on, `harness_call` asks the JEV judge one more question before dispatching: **does this task have a skill that would change how it is executed?** The judge picks one of the 39 skills in [mattpocock/skills](https://github.com/mattpocock/skills) (TDD, code-review, diagnosing-bugs, wayfinder, to-spec, to-tickets, triage, wizard, grilling, teach, …) or answers `none`. The chosen skill's body is prepended as a `## Skill: <name>` block, so the routed model follows it instead of improvising.

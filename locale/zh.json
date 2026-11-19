@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "JEV 分级调度 Harness",
-    "description": "为 DSH 增加左侧栏工作台、输入框开关与技能路由：关 = 插件让位、走 DSH 自身模型网关；开 = 每条指令先交给 JEV 判定器，由它决定分层（判断类走 Kimi K3.1Pro、执行类走 DeepSeek4.1Flash101），技能开关打开时还会从 mattpocock/skills 里挑出最合适的一个 skill（共 39 个：TDD、code-review、diagnosing-bugs、wayfinder、to-spec 等）把说明挂进这次调用。工具：harness_call、harness_classify、harness_review、harness_probe、harness_skill。在侧栏页面填写网关地址、API key 与精确 model id；环境变量 JEV_API_KEY/KIMI_API_KEY/DSF_API_KEY 作为兜底。"
+    "description": "为 DSH 增加左侧栏工作台、输入框开关与技能路由：关 = 插件让位、走 DSH 自身模型网关；开 = 每条指令先交给 JEV 判定器，由它决定分层（判断类走 Kimi K3.1Pro、执行类走 DeepSeek4.1Flash101），技能开关打开时还会从 mattpocock/skills 里挑出最合适的一个 skill（共 39 个：TDD、code-review、diagnosing-bugs、wayfinder、to-spec 等）把说明挂进这次调用。工具：harness_call、harness_classify、harness_review、harness_probe、harness_skill。在侧栏页面填写网关地址、API key 与精确 model id；环境变量 JEV_API_KEY/KIMI_API_KEY/DSF_API_KEY 作为兜底。配置面板还带一个流量看板：按网关统计 JEV / Kimi / DeepSeek Flash 的请求数、token、成功率与耗时，并按小时（24 小时）或按天（7 天）画成柱状图，数据来自本机账本文件。"
   },
   "jev.panel": "JEV 分级调度",
   "jev.page.title": "JEV 分级调度 Harness",

@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "JEV tiered harness",
-    "description": "Adds a left-sidebar workbench, a composer switch, and a skill router: OFF steps aside and uses the DSH model gateway; ON sends every instruction to a JEV judge, which picks the tier (Kimi K3.1Pro for judgment, DeepSeek4.1Flash101 for execution) and, when the skills switch is on, mounts the best-fitting skill from mattpocock/skills (39 skills: TDD, code-review, diagnosing-bugs, wayfinder, to-spec and more) into the call. Tools: harness_call, harness_classify, harness_review, harness_probe, harness_skill. Fill gateway base URLs, API keys and exact model ids in the sidebar page; JEV_API_KEY/KIMI_API_KEY/DSF_API_KEY work as an environment fallback."
+    "description": "Adds a left-sidebar workbench, a composer switch, and a skill router: OFF steps aside and uses the DSH model gateway; ON sends every instruction to a JEV judge, which picks the tier (Kimi K3.1Pro for judgment, DeepSeek4.1Flash101 for execution) and, when the skills switch is on, mounts the best-fitting skill from mattpocock/skills (39 skills: TDD, code-review, diagnosing-bugs, wayfinder, to-spec and more) into the call. Tools: harness_call, harness_classify, harness_review, harness_probe, harness_skill. Fill gateway base URLs, API keys and exact model ids in the sidebar page; JEV_API_KEY/KIMI_API_KEY/DSF_API_KEY work as an environment fallback. The settings panel also carries a live traffic dashboard: per-gateway request counts, tokens, success rate and latency for JEV / Kimi / DeepSeek Flash, charted hourly (24h) or daily (7d) from a local ledger."
   },
   "jev.panel": "JEV Harness",
   "jev.page.title": "JEV tiered harness",

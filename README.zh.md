@@ -17,6 +17,21 @@
 - **开**：插件接管路由。每条指令先由 JEV 判定，再走 Kimi 或 DeepSeek Flash；此时 DSH 自身的模型选择器不参与。
 - **关**：插件完全让位，一切回到 DSH 自己的模型网关。
 
+## 流量看板
+
+配置面板顶部有一个实时看板，按网关统计调用情况：
+
+| 指标 | 含义 |
+| --- | --- |
+| 请求数 | 每一次真正发往网关的 HTTP 请求计一次（含探测、含失败） |
+| token | 网关返回的 usage；失败请求记 0 |
+| 成功率 / 耗时 | 按窗口内累计计算，耗时取平均 |
+| 柱状图 | 近 24 小时按小时、近 7 天按天，三个网关分组对比；悬停看具体数值 |
+
+三个网关对应三类流量：`JEV 判定`（`/systemone`）、`Kimi 决策`、`DSF 执行`。看板每 10 秒自动刷新。
+
+账本落在本机 `<DSH_HOME>/jev-harness-usage.json`（默认 `~/.dsh/jev-harness-usage.json`），按小时与按天两个维度累计，重启不丢；只记录计数、token 与耗时，不记录提示词正文。
+
 ## 技能路由 · mattpocock/skills
 
 打开「自动挂载 skill」后，`harness_call` 在派活前会多问 JEV 一句：**这件事该不该套一个 skill？** 判定器在 [mattpocock/skills](https://github.com/mattpocock/skills) 的 39 个技能里挑一个（TDD、code-review、diagnosing-bugs、wayfinder、to-spec、to-tickets、triage、wizard、grilling、teach…），也可以回答 `none` 表示这次不需要。挑中的 skill 正文会作为 `## Skill: <name>` 块挂进系统提示，模型照着它干活，而不是凭感觉。
