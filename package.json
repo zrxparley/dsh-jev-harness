@@ -1,6 +1,6 @@
 {
   "name": "@zrxparley/dsh-jev-harness",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Tiered LLM harness for DeepSeek Harness: one switch, JEV decides every task, then Kimi K3.1 Pro handles judgment and DeepSeek 4.1 Flash handles execution, via OpenAI-compatible gateways.",
   "type": "module",
   "license": "MIT",

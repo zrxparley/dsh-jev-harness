@@ -20,6 +20,7 @@
  *   env:    JEV_BASE_URL / KIMI_BASE_URL / DSF_BASE_URL, JEV_API_KEY / KIMI_API_KEY / DSF_API_KEY
  */
 
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -54,6 +55,9 @@ const STORE_FIELDS = [
   'jevBaseUrl', 'jevApiKey', 'jevModel',
   'kimiBaseUrl', 'kimiApiKey', 'kimiModel',
   'dsfBaseUrl', 'dsfApiKey', 'dsfModel',
+  'routeMode',
+  'decisionProvider', 'decisionModel',
+  'executionProvider', 'executionModel',
 ]
 
 /** Booleans are stored as real JSON booleans, not strings. */
@@ -154,6 +158,22 @@ function resolveConfig(config = {}, store = readStore()) {
       repo: pick(c.skillsRepo, 'mattpocock/skills'),
       ref: pick(c.skillsRef, 'main'),
       maxChars: num(c.skillsMaxChars, 6000),
+    },
+    // Where the routed work actually runs.
+    //   'dsh'    = through DSH's own model gateway (ctx.llm), so the plugin keeps
+    //              no model credentials at all; only the JEV judge key is needed.
+    //   'direct' = the plugin calls its own OpenAI-compatible gateways.
+    routeMode: (() => {
+      const mode = pick(store.routeMode, c.routeMode).toLowerCase()
+      return mode === 'direct' || mode === 'dsh' ? mode : 'dsh'
+    })(),
+    decision: {
+      provider: pick(store.decisionProvider, c.decisionProvider, 'titigate'),
+      model: pick(store.decisionModel, c.decisionModel, 'kimi-k3.1-pro'),
+    },
+    execution: {
+      provider: pick(store.executionProvider, c.executionProvider, 'titigate'),
+      model: pick(store.executionModel, c.executionModel, 'deepseek-v4.1-flash-1017'),
     },
     timeoutMs: num(c.timeoutMs, 120000),
     temperature: Number.isFinite(Number(c.temperature)) ? Number(c.temperature) : 0.2,
@@ -533,6 +553,80 @@ async function chat(route, messages, opts, cfg, exec) {
   }
 }
 
+/**
+ * Route one call through DSH's own model gateway (`ctx.llm`). The plugin then
+ * keeps no kimi/dsf credentials at all — the Host already holds the provider
+ * key — and whatever the user configured in DSH Models is what actually runs.
+ */
+async function dshChat(llm, binding, opts, cfg, exec) {
+  if (!llm || typeof llm.prepareCall !== 'function') {
+    throw new Error('DSH model service (llm) is unavailable — switch the route to 直连 or configure a gateway')
+  }
+  const startedAt = Date.now()
+  const link = combineSignal(cfg.timeoutMs, exec && exec.signal)
+  try {
+    const maxTokens = opts.maxTokens || 1200
+    const controls = { maxTokens }
+    if (Number.isFinite(opts.temperature)) controls.temperature = opts.temperature
+    let call
+    try {
+      call = await llm.prepareCall({ provider: binding.provider, model: binding.model, ...controls }, link.signal)
+    } catch (err) {
+      // Some models (kimi-k3 family) reject sampling controls outright.
+      if (!/temperature/i.test(String((err && err.message) || ''))) throw err
+      call = await llm.prepareCall({ provider: binding.provider, model: binding.model, maxTokens }, link.signal)
+    }
+    const message = {
+      id: randomUUID(),
+      role: 'user',
+      content: [{ type: 'text', text: opts.user }],
+      source: { kind: 'jev-harness' },
+    }
+    const options = {
+      ...call.config,
+      messages: [message],
+      system: opts.system || '',
+      purpose: 'jev-harness',
+      signal: link.signal,
+    }
+    let text = ''
+    let reasoningChars = 0
+    let inputTokens = 0
+    let outputTokens = 0
+    for await (const chunk of call.stream(options)) {
+      if (!chunk || typeof chunk !== 'object') continue
+      if (chunk.type === 'text-delta') text += String(chunk.text || '')
+      else if (chunk.type === 'reasoning-delta') reasoningChars += String(chunk.text || '').length
+      else if (chunk.type === 'usage' && chunk.usage && typeof chunk.usage === 'object') {
+        const u = chunk.usage
+        inputTokens = Number(u.inputTokens ?? u.input_tokens ?? u.promptTokens ?? u.prompt_tokens) || inputTokens
+        outputTokens = Number(u.outputTokens ?? u.output_tokens ?? u.completionTokens ?? u.completion_tokens) || outputTokens
+      }
+    }
+    const trimmed = text.trim()
+    const reasoningTokens = reasoningChars > 0 ? Math.ceil(reasoningChars / 3) : 0
+    recordUsage({
+      gateway: binding.key, model: binding.model, tool: opts.tool || 'call', ok: true, status: 200,
+      ms: Date.now() - startedAt, promptTokens: inputTokens, completionTokens: outputTokens,
+    })
+    return {
+      text: trimmed,
+      promptTokens: inputTokens,
+      completionTokens: outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      reasoningTokens: trimmed ? reasoningTokens : (outputTokens || reasoningTokens),
+    }
+  } catch (err) {
+    recordUsage({
+      gateway: binding.key, model: binding.model, tool: opts.tool || 'call', ok: false, status: 0,
+      ms: Date.now() - startedAt, error: shortError(err),
+    })
+    throw err
+  } finally {
+    link.dispose()
+  }
+}
+
 function result(overrides = {}) {
   return {
     ok: false,
@@ -839,6 +933,30 @@ export function apply(ctx, config = {}) {
       `\n\n${clipped}`
   }
 
+  /** The DSH model service (in-process gateway), when this Host provides one. */
+  function dshLlm() {
+    try { return ctx.get('llm') || null } catch { return null }
+  }
+
+  /** Models the Host's own gateway serves for one provider. */
+  async function dshModels(provider) {
+    const llm = dshLlm()
+    if (!llm || typeof llm.listModels !== 'function') return []
+    const list = await llm.listModels(provider)
+    return (Array.isArray(list) ? list : []).map((m) => ({
+      id: String((m && (m.id || m.model)) || m || ''),
+      name: String((m && (m.name || m.displayName)) || (m && m.id) || m || ''),
+    })).filter((m) => m.id !== '')
+  }
+
+  /** Per-tier binding when routing runs through DSH itself. */
+  function dshBinding(selected) {
+    const tierCfg = selected === 'kimi' ? cfg.decision : cfg.execution
+    return { key: selected, provider: tierCfg.provider, model: tierCfg.model }
+  }
+
+  const dshReady = () => cfg.routeMode === 'dsh' && dshLlm() !== null
+
   const tools = [
     {
       name: 'harness_call',
@@ -906,18 +1024,28 @@ export function apply(ctx, config = {}) {
         const forced = args.provider === 'kimi' || args.provider === 'dsf'
         const selected = forced ? args.provider : routeFor(tier).key
         const route = selected === 'kimi' ? cfg.kimi : cfg.dsf
+        // Two ways to run the routed work:
+        //   dsh  — through DSH's own gateway, so the kimi/dsf keys here are unused
+        //   direct — the plugin calls its own OpenAI-compatible gateway
+        const useDsh = dshReady()
+        const binding = useDsh ? dshBinding(selected) : null
+        const servedModel = useDsh ? `${binding.provider}/${binding.model}` : route.model
+        const systemText = 'You are executing a task delegated by a chief-of-staff agent. Follow the task precisely and return a complete, self-contained answer.'
+          + (mounted ? `\n\nWhere they apply, follow the skill instructions below. They are reference material, not a script to quote back.\n\n${mounted}` : '')
+        const userText = args.context ? `Task:\n${task}\n\nContext:\n${args.context}` : task
         const routedAt = Date.now()
         try {
-          const answer = await chat(route, [
-            { role: 'system', content: 'You are executing a task delegated by a chief-of-staff agent. Follow the task precisely and return a complete, self-contained answer.'
-              + (mounted ? `\n\nWhere they apply, follow the skill instructions below. They are reference material, not a script to quote back.\n\n${mounted}` : '') },
-            { role: 'user', content: args.context ? `Task:\n${task}\n\nContext:\n${args.context}` : task },
-          ], { provider: selected, tool: 'call', temperature: args.temperature, maxTokens: args.maxTokens }, cfg, exec)
+          const answer = useDsh
+            ? await dshChat(dshLlm(), binding, { system: systemText, user: userText, temperature: args.temperature, maxTokens: args.maxTokens, tool: 'call' }, cfg, exec)
+            : await chat(route, [
+              { role: 'system', content: systemText },
+              { role: 'user', content: userText },
+            ], { provider: selected, tool: 'call', temperature: args.temperature, maxTokens: args.maxTokens }, cfg, exec)
           const emptyHint = !answer.text && answer.completionTokens > 0
             ? ` — empty content: the model spent ${answer.reasoningTokens || answer.completionTokens} of ${answer.completionTokens} completion tokens on reasoning and never reached an answer; retry with maxTokens around ${Math.max(600, (answer.reasoningTokens || answer.completionTokens) * 2)}`
             : ''
           recordDecision({
-            task, tier, asked: askedTier, provider: selected, model: route.model, skill: skillId, ok: true,
+            task, tier, asked: askedTier, provider: selected, model: servedModel, skill: skillId, ok: true,
             source: judged ? judged.source : 'explicit',
             choice: judged ? judged.choice : tier,
             confidence: judged ? judged.confidence : undefined,
@@ -929,20 +1057,20 @@ export function apply(ctx, config = {}) {
             ok: true,
             tier,
             provider: selected,
-            model: route.model,
+            model: servedModel,
             ...answer,
-            note: (note || `${tier} tier via ${selected}`) + skillNote + emptyHint,
+            note: (note || `${tier} tier via ${selected}`) + (useDsh ? ' · via DSH gateway' : ' · via plugin gateway') + skillNote + emptyHint,
           })
         } catch (err) {
           recordDecision({
-            task, tier, asked: askedTier, provider: selected, model: route.model, skill: skillId, ok: false,
+            task, tier, asked: askedTier, provider: selected, model: servedModel, skill: skillId, ok: false,
             source: judged ? judged.source : 'explicit',
             choice: judged ? judged.choice : tier,
             confidence: judged ? judged.confidence : undefined,
             ms: Date.now() - routedAt,
             error: shortError(err),
           })
-          return result({ tier, provider: selected, model: route.model, note: `call failed: ${shortError(err)}` })
+          return result({ tier, provider: selected, model: servedModel, note: `call failed: ${shortError(err)}` })
         }
       },
     },
@@ -1012,23 +1140,85 @@ export function apply(ctx, config = {}) {
           ? args.reviewer
           : (primary === 'decision' ? 'dsf' : 'kimi')
         const route = reviewer === 'kimi' ? cfg.kimi : cfg.dsf
+        const useDsh = dshReady()
+        const binding = useDsh ? dshBinding(reviewer) : null
+        const servedModel = useDsh ? `${binding.provider}/${binding.model}` : route.model
+        const systemText = 'You are an independent reviewer. Assess the draft against the task. State a verdict (PASS or CHANGE), then list concrete issues and fixes. Be concise and specific.'
+        const userText = `Task:\n${task}\n\n${args.criteria ? `Criteria:\n${args.criteria}\n\n` : ''}Draft to review:\n${draft}`
         try {
-          const answer = await chat(route, [
-            { role: 'system', content: 'You are an independent reviewer. Assess the draft against the task. State a verdict (PASS or CHANGE), then list concrete issues and fixes. Be concise and specific.' },
-            { role: 'user', content: `Task:\n${task}\n\n${args.criteria ? `Criteria:\n${args.criteria}\n\n` : ''}Draft to review:\n${draft}` },
-          ], { provider: reviewer, tool: 'review', temperature: 0.1 }, cfg, exec)
+          const answer = useDsh
+            ? await dshChat(dshLlm(), binding, { system: systemText, user: userText, temperature: 0.1, tool: 'review' }, cfg, exec)
+            : await chat(route, [
+              { role: 'system', content: systemText },
+              { role: 'user', content: userText },
+            ], { provider: reviewer, tool: 'review', temperature: 0.1 }, cfg, exec)
           return result({
             ok: true,
             tier: primary,
             provider: reviewer,
-            model: route.model,
+            model: servedModel,
             text: answer.text,
-            note: note || `reviewed ${primary}-tier draft with ${reviewer}`,
+            note: (note || `reviewed ${primary}-tier draft with ${reviewer}`) + (useDsh ? ' · via DSH gateway' : ' · via plugin gateway'),
             ...answer,
           })
         } catch (err) {
-          return result({ tier: primary, provider: reviewer, model: route.model, note: `review failed: ${shortError(err)}` })
+          return result({ tier: primary, provider: reviewer, model: servedModel, note: `review failed: ${shortError(err)}` })
         }
+      },
+    },
+    {
+      name: 'harness_dsh',
+      description: 'Report whether this harness can route through DSH\'s own model gateway (the in-process llm service) instead of carrying its own API keys, and list the models DSH already knows about. Use it when the user asks "is the plugin using my DSH models?" or to pick the provider/model ids for the strategy (decision) and execution tiers.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          action: { type: 'string', enum: ['status', 'models'], description: 'status (default) reports capability; models lists the models for one DSH provider.' },
+          provider: { type: 'string', description: 'DSH provider id to enumerate when action=models (e.g. titigate).' },
+        },
+      },
+      output: { schema: RESULT_SCHEMA, render: render('DSH mode') },
+      isConcurrencySafe: true,
+      timeoutMs: cfg.timeoutMs + 5000,
+      async execute(args) {
+        refresh()
+        const action = args.action === 'models' ? 'models' : 'status'
+        const lines = []
+        let llm = null
+        try {
+          llm = ctx.get('llm') || null
+        } catch { llm = null }
+        lines.push(`llm service: ${llm ? 'available' : 'missing'}`)
+        let api = null
+        let importError = ''
+        try {
+          api = await import('@deepseek-ai/dsh-llm')
+        } catch (err) {
+          importError = shortError(err)
+        }
+        lines.push(api ? `dsh-llm import: ok (${Object.keys(api).slice(0, 8).join(', ')}${Object.keys(api).length > 8 ? ', …' : ''})` : `dsh-llm import: FAILED — ${importError}`)
+        if (llm && typeof llm.listModels === 'function') {
+          const provider = typeof args.provider === 'string' ? args.provider.trim() : ''
+          if (action === 'models') {
+            if (!provider) {
+              lines.push('provider is required for action=models')
+            } else {
+              try {
+                const models = await llm.listModels(provider)
+                const ids = (Array.isArray(models) ? models : []).map((m) => (m && (m.id || m.model)) || String(m))
+                lines.push(`provider ${provider}: ${ids.length} model(s)`)
+                for (const id of ids.slice(0, 40)) lines.push(`  - ${id}`)
+              } catch (err) {
+                lines.push(`provider ${provider}: listModels failed — ${shortError(err)}`)
+              }
+            }
+          } else {
+            lines.push('tip: action=models with a provider id (see your DSH models settings) lists the exact ids')
+          }
+        } else if (llm) {
+          lines.push('llm service has no listModels — model ids must be typed manually')
+        }
+        return result({ ok: Boolean(llm && api), note: lines.join('\n') })
       },
     },
     {
@@ -1049,6 +1239,44 @@ export function apply(ctx, config = {}) {
         const which = args.provider === 'jev' || args.provider === 'kimi' || args.provider === 'dsf'
           ? [args.provider]
           : ['jev', 'kimi', 'dsf']
+        // In DSH mode the kimi/dsf hops are served by the Host itself, so the
+        // honest check is "does the Host resolve these provider/model pairs".
+        if (dshReady()) {
+          const lines = []
+          let okCount = 0
+          for (const selected of ['kimi', 'dsf']) {
+            if (args.provider && args.provider !== selected) continue
+            const binding = dshBinding(selected)
+            try {
+              const models = await dshModels(binding.provider)
+              const hit = models.some((m) => m.id === binding.model)
+              okCount += 1
+              lines.push(`${selected}: DSH ${binding.provider}/${binding.model} — ${hit ? 'OK' : `model id NOT in list (${models.length} served)`}${models.length && !hit ? `: ${models.slice(0, 20).map((m) => m.id).join(', ')}` : ''}`)
+            } catch (err) {
+              lines.push(`${selected}: DSH ${binding.provider}/${binding.model} — ERROR ${shortError(err)}`)
+            }
+          }
+          if (args.provider === 'jev' || !args.provider) {
+            const jevUrl = modelsUrl(cfg.jev.base)
+            if (!jevUrl) lines.push('jev: NOT CONFIGURED (no base URL)')
+            else {
+              const link = combineSignal(cfg.timeoutMs, exec?.signal)
+              try {
+                const res = await fetch(jevUrl, { headers: cfg.jev.key ? { authorization: `Bearer ${cfg.jev.key}` } : {}, signal: link.signal })
+                lines.push(`jev: HTTP ${res.status}`)
+                if (res.ok) okCount += 1
+              } catch (err) {
+                lines.push(`jev: ERROR ${shortError(err)}`)
+              } finally { link.dispose() }
+            }
+          }
+          return result({
+            ok: okCount > 0,
+            provider: args.provider || 'dsh',
+            text: lines.join('\n'),
+            note: `route mode: DSH gateway (${cfg.decision.provider}/${cfg.decision.model} · ${cfg.execution.provider}/${cfg.execution.model})`,
+          })
+        }
         const lines = []
         let okCount = 0
         for (const key of which) {
@@ -1267,6 +1495,14 @@ export function apply(ctx, config = {}) {
       file: storePath(),
       gateways: { jev: view('jev'), kimi: view('kimi'), dsf: view('dsf') },
       tiers: { decision: 'kimi', execution: 'dsf' },
+      route: {
+        mode: live.routeMode,
+        dshAvailable: dshLlm() !== null,
+        // True when calls actually go through DSH right now.
+        active: live.routeMode === 'dsh' && dshLlm() !== null,
+        decision: { provider: live.decision.provider, model: live.decision.model },
+        execution: { provider: live.execution.provider, model: live.execution.model },
+      },
       decisions: readUsage().decisions.slice(-5).reverse(),
       skills: {
         auto: live.skills.auto,
@@ -1437,6 +1673,17 @@ export function apply(ctx, config = {}) {
         const patch = {}
         if (Object.prototype.hasOwnProperty.call(body, 'enabled')) patch.enabled = body.enabled
         if (Object.prototype.hasOwnProperty.call(body, 'skillsAuto')) patch.skillsAuto = body.skillsAuto
+        if (typeof body.routeMode === 'string') {
+          const mode = body.routeMode.trim().toLowerCase()
+          if (mode !== 'dsh' && mode !== 'direct') { writeJson(res, 400, { ok: false, error: 'routeMode must be dsh or direct' }); return }
+          patch.routeMode = mode
+        }
+        for (const [tierKey, prefix] of [['decision', 'decision'], ['execution', 'execution']]) {
+          const tier = body[tierKey]
+          if (!tier || typeof tier !== 'object') continue
+          if (typeof tier.provider === 'string') patch[`${prefix}Provider`] = tier.provider
+          if (typeof tier.model === 'string') patch[`${prefix}Model`] = tier.model
+        }
         for (const key of ['jev', 'kimi', 'dsf']) {
           const entry = body[key]
           if (!entry || typeof entry !== 'object') continue
@@ -1497,6 +1744,29 @@ export function apply(ctx, config = {}) {
         if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         const asked = Number(new URL(req.url || '/api/jev-harness/stats', 'http://127.0.0.1').searchParams.get('hours'))
         writeJson(res, 200, usageReport(Number.isFinite(asked) && asked > 0 ? Math.min(168, asked) : 24))
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/jev-harness/dsh/models',
+      handler: async (req, res) => {
+        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        const url = new URL(req.url || '/', 'http://127.0.0.1')
+        const provider = String(url.searchParams.get('provider') || '').trim()
+        const llm = dshLlm()
+        if (!llm) { writeJson(res, 200, { ok: false, error: 'this Host exposes no llm service', models: [] }); return }
+        if (!provider) { writeJson(res, 400, { ok: false, error: 'provider is required', models: [] }); return }
+        try {
+          const list = await llm.listModels(provider)
+          const models = (Array.isArray(list) ? list : []).map((m) => ({
+            id: String((m && (m.id || m.model)) || m || ''),
+            name: String((m && (m.name || m.displayName)) || (m && m.id) || m || ''),
+          })).filter((m) => m.id !== '')
+          writeJson(res, 200, { ok: true, provider, models })
+        } catch (err) {
+          writeJson(res, 200, { ok: false, error: shortError(err), models: [] })
+        }
       },
     },
     {

@@ -17,6 +17,17 @@ No provider configuration and no route authorization in DSH are required.
 - **ON** — the harness owns routing: JEV judges each instruction, then Kimi or DeepSeek Flash produces the answer; DSH's own model selector is not part of the path.
 - **OFF** — the harness steps aside completely and everything falls back to DSH's own model gateway.
 
+## Execution route (DSH gateway vs direct)
+
+Two real paths once the switch is ON — pick one in the 执行方式 card:
+
+| Mode | Who sends the Kimi / DeepSeek request | Keys needed here |
+| --- | --- | --- |
+| **Via DSH gateway** (default) | DSH itself (`ctx.llm`, using providers/models configured in DSH) | JEV judge key only |
+| **Direct** | the plugin calls its own OpenAI-compatible endpoints | JEV + Kimi + DeepSeek |
+
+In DSH mode the plugin holds and uses no kimi/dsf credentials: the Host already owns provider credentials, so the plugin only decides the tier and hands the work over. Tier provider/model are editable in the panel, and 「列出 DSH 模型」 asks the Host which ids exist.
+
 ## Traffic dashboard
 
 The top of the settings page is a live per-gateway dashboard:
