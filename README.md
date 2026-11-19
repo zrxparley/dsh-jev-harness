@@ -67,6 +67,8 @@ Honest status: **"switch ON = traffic does not go through the DSH gateway" is a 
 
 Tier rule: *does a human need to judge whether this is right?* → decision (Kimi); mechanical execution → execution (Flash). Without a JEV gateway the plugin falls back to a local keyword heuristic, ties going to decision.
 
+- **Hover the switch** for the decision trace: which tier the judge picked and with what confidence, which model actually answered, tokens, latency and a task excerpt. Falls back honestly to `heuristic (JEV unreachable)` when the judge is down.
+
 ## Install
 
 ```bash

@@ -172,6 +172,7 @@ const USAGE_VERSION = 1
 const USAGE_HOURS = 48
 const USAGE_DAYS = 30
 const USAGE_RECENT = 40
+const DECISIONS_MAX = 12
 
 function usagePath() {
   const home = String(process.env.DSH_HOME || '').trim() || path.join(os.homedir(), '.dsh')
@@ -183,7 +184,7 @@ function emptyBucket() {
 }
 
 function emptyUsage() {
-  return { version: USAGE_VERSION, hours: {}, days: {}, recent: [] }
+  return { version: USAGE_VERSION, hours: {}, days: {}, recent: [], decisions: [] }
 }
 
 function readUsage() {
@@ -195,6 +196,7 @@ function readUsage() {
       hours: parsed.hours && typeof parsed.hours === 'object' ? parsed.hours : {},
       days: parsed.days && typeof parsed.days === 'object' ? parsed.days : {},
       recent: Array.isArray(parsed.recent) ? parsed.recent : [],
+      decisions: Array.isArray(parsed.decisions) ? parsed.decisions : [],
     }
   } catch {
     return emptyUsage()
@@ -209,6 +211,7 @@ function writeUsage(usage) {
     const dayKeys = Object.keys(usage.days).sort()
     while (dayKeys.length > USAGE_DAYS) delete usage.days[dayKeys.shift()]
     usage.recent = usage.recent.slice(-USAGE_RECENT)
+    if (Array.isArray(usage.decisions)) usage.decisions = usage.decisions.slice(-DECISIONS_MAX)
     fs.writeFileSync(usagePath(), JSON.stringify(usage), { mode: 0o600 })
   } catch { /* accounting must never break a call */ }
 }
@@ -221,6 +224,37 @@ function bumpBucket(target, event) {
   target.promptTokens = (target.promptTokens || 0) + (event.promptTokens || 0)
   target.completionTokens = (target.completionTokens || 0) + (event.completionTokens || 0)
   target.ms = (target.ms || 0) + (event.ms || 0)
+}
+
+/**
+ * Record one routing decision: which tier the judge picked, why, and who actually
+ * answered. This is the only place a user can find out "who did this work" —
+ * the usage ledger alone only knows gateway counts.
+ */
+function recordDecision(entry) {
+  try {
+    const usage = readUsage()
+    if (!Array.isArray(usage.decisions)) usage.decisions = []
+    usage.decisions.push({
+      t: new Date(entry.at || Date.now()).toISOString(),
+      task: String(entry.task || '').slice(0, 120),
+      tier: entry.tier || '',
+      asked: entry.asked || 'auto',
+      source: entry.source || 'explicit',
+      choice: entry.choice || entry.tier || '',
+      confidence: Number.isFinite(entry.confidence) ? Number(entry.confidence) : undefined,
+      provider: entry.provider || '',
+      model: entry.model || '',
+      skill: entry.skill || '',
+      ok: Boolean(entry.ok),
+      ms: Math.round(entry.ms || 0),
+      pt: entry.pt || 0,
+      ct: entry.ct || 0,
+      error: entry.error ? String(entry.error).slice(0, 160) : '',
+    })
+    if (usage.decisions.length > DECISIONS_MAX) usage.decisions = usage.decisions.slice(-DECISIONS_MAX)
+    writeUsage(usage)
+  } catch { /* observability must never break a call */ }
 }
 
 /** Record one gateway call: hourly + daily buckets, plus the recent ring. */
@@ -616,20 +650,24 @@ export function apply(ctx, config = {}) {
           const confidence = Number(answer.confidence)
           return {
             tier,
+            source: 'jev',
+            choice: tier,
+            confidence: Number.isFinite(confidence) ? confidence : undefined,
+            model: body.model || cfg.jev.model,
             reason: `jev ${body.model || cfg.jev.model} choice=${tier}` +
               (Number.isFinite(confidence) ? ` (confidence ${confidence.toFixed(2)})` : ''),
           }
         }
-        return { tier: heuristicTier(task).tier, reason: 'jev returned no usable choice; used heuristic' }
+        return { ...heuristicTier(task), source: 'heuristic', reason: 'jev returned no usable choice; used heuristic' }
       } catch (err) {
         recordUsage({
           gateway: 'jev', model: cfg.jev.model, tool: 'classify', ok: false, status: 0,
           ms: Date.now() - startedAt, error: shortError(err),
         })
-        return { tier: heuristicTier(task).tier, reason: `jev router failed (${shortError(err)}); used heuristic` }
+        return { ...heuristicTier(task), source: 'heuristic', reason: `jev router failed (${shortError(err)}); used heuristic` }
       }
     }
-    return heuristicTier(task)
+    return { ...heuristicTier(task), source: 'heuristic' }
   }
 
   /* ------------------------------------------------------- skills routing */
@@ -827,16 +865,19 @@ export function apply(ctx, config = {}) {
         if (!cfg.enabled) return result({ note: DISABLED_NOTE })
         const task = String(args.task || '').trim()
         if (!task) return result({ note: 'task must be a non-empty string' })
-        let tier = args.tier === 'decision' || args.tier === 'execution' ? args.tier : 'auto'
+        const askedTier = args.tier === 'decision' || args.tier === 'execution' ? args.tier : 'auto'
+        let tier = askedTier
         let note = ''
+        let judged = null
         if (tier === 'auto') {
-          const decided = await decideTier(task, args.context)
-          tier = decided.tier
-          note = `auto-classified as ${tier}: ${decided.reason}`
+          judged = await decideTier(task, args.context)
+          tier = judged.tier
+          note = `auto-classified as ${tier}: ${judged.reason}`
         }
         // Mount the best-fitting skill into the call so the routed model follows it.
         let mounted = ''
         let skillNote = ''
+        let skillId = ''
         const asked = typeof args.skill === 'string' ? args.skill.trim() : ''
         const wantSkill = asked === '' || asked === 'auto' ? (cfg.skills.auto ? 'auto' : 'off') : asked
         if (wantSkill !== 'off') {
@@ -849,6 +890,7 @@ export function apply(ctx, config = {}) {
               if (skill) {
                 const loaded = await skillBody(skill, cfg, exec)
                 mounted = skillBlock(skill, loaded.text, cfg.skills.maxChars)
+                skillId = skill.id
                 skillNote = ` · skill=${skill.id}${loaded.cached ? ' (cached)' : ''}`
               } else {
                 skillNote = ` · skill=${chosen.id} not in catalog, ignored`
@@ -864,6 +906,7 @@ export function apply(ctx, config = {}) {
         const forced = args.provider === 'kimi' || args.provider === 'dsf'
         const selected = forced ? args.provider : routeFor(tier).key
         const route = selected === 'kimi' ? cfg.kimi : cfg.dsf
+        const routedAt = Date.now()
         try {
           const answer = await chat(route, [
             { role: 'system', content: 'You are executing a task delegated by a chief-of-staff agent. Follow the task precisely and return a complete, self-contained answer.'
@@ -873,6 +916,15 @@ export function apply(ctx, config = {}) {
           const emptyHint = !answer.text && answer.completionTokens > 0
             ? ` — empty content: the model spent ${answer.reasoningTokens || answer.completionTokens} of ${answer.completionTokens} completion tokens on reasoning and never reached an answer; retry with maxTokens around ${Math.max(600, (answer.reasoningTokens || answer.completionTokens) * 2)}`
             : ''
+          recordDecision({
+            task, tier, asked: askedTier, provider: selected, model: route.model, skill: skillId, ok: true,
+            source: judged ? judged.source : 'explicit',
+            choice: judged ? judged.choice : tier,
+            confidence: judged ? judged.confidence : undefined,
+            ms: Date.now() - routedAt,
+            pt: answer.promptTokens || 0,
+            ct: answer.completionTokens || 0,
+          })
           return result({
             ok: true,
             tier,
@@ -882,6 +934,14 @@ export function apply(ctx, config = {}) {
             note: (note || `${tier} tier via ${selected}`) + skillNote + emptyHint,
           })
         } catch (err) {
+          recordDecision({
+            task, tier, asked: askedTier, provider: selected, model: route.model, skill: skillId, ok: false,
+            source: judged ? judged.source : 'explicit',
+            choice: judged ? judged.choice : tier,
+            confidence: judged ? judged.confidence : undefined,
+            ms: Date.now() - routedAt,
+            error: shortError(err),
+          })
           return result({ tier, provider: selected, model: route.model, note: `call failed: ${shortError(err)}` })
         }
       },
@@ -1207,6 +1267,7 @@ export function apply(ctx, config = {}) {
       file: storePath(),
       gateways: { jev: view('jev'), kimi: view('kimi'), dsf: view('dsf') },
       tiers: { decision: 'kimi', execution: 'dsf' },
+      decisions: readUsage().decisions.slice(-5).reverse(),
       skills: {
         auto: live.skills.auto,
         count: skillCatalog().skills.length,
