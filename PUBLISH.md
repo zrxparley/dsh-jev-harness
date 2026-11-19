@@ -38,17 +38,31 @@ gh repo create zrxparley/dsh-jev-harness --public --source=. --remote=origin --p
 > gh repo edit zrxparley/dsh-jev-harness --add-topic dsh-plugin
 > ```
 
-### 3. 发布 npm 包
+### 3. 预构建产物（已完成 ✅）
+本插件采用 **GitHub Release tarball** 路径，无需 npm 账号也能让用户跳过构建授权：
+
+- Release: https://github.com/zrxparley/dsh-jev-harness/releases/tag/v1.0.0
+- 资产: `zrxparley-dsh-jev-harness-1.0.0.tgz`（`npm pack` 生成，12 个文件齐全）
+- 市场条目已写入 `tarball:` 字段指向该 URL
+
+如日后想额外发 npm 包（可选，非必需）：
 ```bash
-npm publish --access public   # 先 npm login
+npm login && npm publish --access public
 ```
-发布预构建产物可让用户安装时**跳过构建授权**（推荐）。
+发了以后可在本仓库 `package.json` 保留 npm 名，两种安装方式并存。
 
 ### 4. 提交 DSHmarket 条目
 向 https://github.com/awesome-dsh-plugin/awesome-dsh-plugin 提一个 PR：
 - 新增文件：`data/plugins/zrxparley__dsh-jev-harness.yml`（内容就是本仓库 `market/data/plugins/` 下那个文件）
 - 一个 PR 最多 3 个条目；本插件只需 1 个
 - CI 会校验：仓库声明了 `dsh.bundle`（本包 `package.json` 已声明 ✓）、仓库 ≥1 天、topic 含 `dsh-plugin`、描述与代码相符
+
+### 4.5 实际进度（无需再做）
+- ✅ GitHub 仓库已建、已推、已加 `dsh-plugin` topic
+- ✅ 预构建 tarball 已挂到 Release v1.0.0，raw 图标/详情/manifest URL 均 HTTP 200
+- ✅ 市场条目 yml 已写好（含 `tarball:` 字段）
+- ✅ 已向 awesome-dsh-plugin 提交 PR：**https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/16794**
+- ⏳ 唯一剩余：仓库年龄门槛 —— 创建于 2026-11-19T03:10:58Z，需满 24h（约 2026-11-20T03:11Z 后）。该检查会**自动重跑并转绿**，无需重新提交、无需推送、无需关重开 PR。
 
 ### 5. 验证
 PR 合并后，在 DSH 里：
