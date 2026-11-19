@@ -80,3 +80,23 @@ dsh plugin add @zrxparley/dsh-jev-harness
 - `icon.svg` — 插件本体图标
 - `market/data/plugins/zrxparley__dsh-jev-harness.yml` — 待提交到 DSHmarket 的条目
 - `README.md` / `README.zh.md` / `LICENSE` — 文档与许可证
+
+## v1.4.0 发布记录（2026-11-19）
+
+| 项 | 状态 |
+| --- | --- |
+| GitHub 仓库 main | 已推送 `af09a20`（v1.4.0） |
+| Git tag | `v1.4.0` |
+| GitHub Release | https://github.com/zrxparley/dsh-jev-harness/releases/tag/v1.4.0 |
+| 预构建 tarball | `zrxparley-dsh-jev-harness-1.4.0.tgz`（23,494 B，13 文件），HTTP 200 |
+| DSHmarket 条目（本仓库副本） | tarball 已指向 v1.4.0 |
+| 市场 PR #16794 | 分支 `add-dsh-jev-harness` 已更新到 v1.4.0 条目 |
+| npm 发布 | **未完成 — 无凭据**（`npm whoami` → ENEEDAUTH；`~/.npmrc` 只有 registry 与 prefix，无 `_authToken`） |
+
+npm 解锁方式（任选其一，需要你本人的账号动作）：
+
+```bash
+npm login                 # 浏览器授权，之后 npm publish 即可
+# 或
+npm config set //registry.npmjs.org/:_authToken=<你的 npm token>
+```
