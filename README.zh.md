@@ -26,7 +26,9 @@
 | **走 DSH 网关**（默认） | DSH 自己（`ctx.llm`，用你在 DSH 里配好的 provider/model） | 只需 JEV 判定器的 key |
 | **直连本插件网关** | 插件自己直连 OpenAI 兼容地址 | JEV + Kimi + DeepSeek 三套 |
 
-走 DSH 网关时，插件不持有也不使用 kimi / dsf 的密钥：宿主已经有 provider 凭据，插件只负责「判定该谁干活」和「把活递过去」。决策层 / 执行层的 provider + model 在面板里填，点「列出 DSH 模型」可以直接问宿主有哪些 id 可选。
+走 DSH 网关时，插件不持有也不使用 kimi / dsf 的密钥：宿主已经有 provider 凭据，插件只负责「判定该谁干活」和「把活递过去」。决策层 / 执行层的 provider + model 用面板里的两个下拉选，内容来自 `ctx.llm.listProviders()` / `listModels()`（点「刷新模型清单」重新问宿主）。留空 = 自动：跟随你在 DSH 选择器里选中的 provider，再按模型名挑最像「强」和「快」的。
+
+还默认开了「让 DSH 选择器跟随」：每次 JEV 派活给某个模型后，宿主的 `agentDefaultModel` 会被写成那个 provider/model，于是输入框上方的模型名会切到真正干活的模型。不想被改写就把它关掉。
 
 > 为什么这样更稳：插件不必猜你的网关地址，也不会和 DSH 的凭据体系打架；换模型只需在 DSH 里改。
 

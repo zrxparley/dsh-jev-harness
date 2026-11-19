@@ -26,7 +26,9 @@ Two real paths once the switch is ON — pick one in the 执行方式 card:
 | **Via DSH gateway** (default) | DSH itself (`ctx.llm`, using providers/models configured in DSH) | JEV judge key only |
 | **Direct** | the plugin calls its own OpenAI-compatible endpoints | JEV + Kimi + DeepSeek |
 
-In DSH mode the plugin holds and uses no kimi/dsf credentials: the Host already owns provider credentials, so the plugin only decides the tier and hands the work over. Tier provider/model are editable in the panel, and 「列出 DSH 模型」 asks the Host which ids exist.
+In DSH mode the plugin holds and uses no kimi/dsf credentials: the Host already owns provider credentials, so the plugin only decides the tier and hands the work over. Tier provider/model are two dropdowns filled from `ctx.llm.listProviders()` / `listModels()` (「刷新模型清单」 re-asks the Host). Leaving them empty means auto: follow the provider you picked in the DSH selector, then rank model names for strongest vs fastest.
+
+「让 DSH 选择器跟随」 is on by default: after JEV hands work to a model, the Host `agentDefaultModel` is rewritten to that provider/model, so the selector above the composer shows the model that actually did the work. Turn it off if you do not want that rewrite.
 
 ## Where the models come from: your own DSH gateway
 

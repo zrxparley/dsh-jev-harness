@@ -58,10 +58,11 @@ const STORE_FIELDS = [
   'routeMode',
   'decisionProvider', 'decisionModel',
   'executionProvider', 'executionModel',
+  'followModel',
 ]
 
 /** Booleans are stored as real JSON booleans, not strings. */
-const STORE_BOOLEANS = new Set(['enabled', 'skillsAuto'])
+const STORE_BOOLEANS = new Set(['enabled', 'skillsAuto', 'followModel'])
 
 function truthy(value, fallback) {
   if (typeof value === 'boolean') return value
@@ -179,6 +180,9 @@ function resolveConfig(config = {}, store = readStore()) {
       provider: pick(store.executionProvider, c.executionProvider),
       model: pick(store.executionModel, c.executionModel),
     },
+    // Mirror the routed decision into DSH's own model selector, so the composer
+    // chip shows the model that is actually working instead of a stale one.
+    followModel: store.followModel !== undefined ? truthy(store.followModel, true) : truthy(c.followModel, true),
     timeoutMs: num(c.timeoutMs, 120000),
     temperature: Number.isFinite(Number(c.temperature)) ? Number(c.temperature) : 0.2,
   }
@@ -1046,6 +1050,28 @@ export function apply(ctx, config = {}) {
     return { key: selected, provider: best.provider, model: best.model, auto: true, pool: usable.length }
   }
 
+  /**
+   * Mirror "who is actually working" into DSH's own model selector.
+   *
+   * DSH keeps the visible selection in the agentDefaultModel service; writing it
+   * makes the composer chip show the model that just ran, instead of whatever
+   * was selected before. Failures are swallowed: the selector is cosmetic, the
+   * routed call already succeeded.
+   */
+  async function dshFollowModel(binding) {
+    if (!cfg.followModel || !binding || !binding.provider || !binding.model) return false
+    try {
+      const svc = ctx.get('agentDefaultModel')
+      if (!svc || typeof svc.saveSelection !== 'function') return false
+      const current = typeof svc.currentSelection === 'function' ? svc.currentSelection() : null
+      if (current && current.provider === binding.provider && current.model === binding.model) return true
+      await svc.saveSelection({ provider: binding.provider, model: binding.model })
+      return true
+    } catch {
+      return false
+    }
+  }
+
   const dshReady = () => cfg.routeMode === 'dsh' && dshLlm() !== null
 
   const tools = [
@@ -1135,6 +1161,7 @@ export function apply(ctx, config = {}) {
           const emptyHint = !answer.text && answer.completionTokens > 0
             ? ` — empty content: the model spent ${answer.reasoningTokens || answer.completionTokens} of ${answer.completionTokens} completion tokens on reasoning and never reached an answer; retry with maxTokens around ${Math.max(600, (answer.reasoningTokens || answer.completionTokens) * 2)}`
             : ''
+          const followed = useDsh ? await dshFollowModel(binding) : false
           recordDecision({
             task, tier, asked: askedTier, provider: selected, model: servedModel, skill: skillId, ok: true,
             source: judged ? judged.source : 'explicit',
@@ -1150,7 +1177,8 @@ export function apply(ctx, config = {}) {
             provider: selected,
             model: servedModel,
             ...answer,
-            note: (note || `${tier} tier via ${selected}`) + (useDsh ? ' · via DSH gateway' : ' · via plugin gateway') + skillNote + emptyHint,
+            note: (note || `${tier} tier via ${selected}`) + (useDsh ? ' · via DSH gateway' : ' · via plugin gateway')
+              + (followed ? ` · DSH 选择器已切到 ${binding.model}` : '') + skillNote + emptyHint,
           })
         } catch (err) {
           recordDecision({
@@ -1243,13 +1271,15 @@ export function apply(ctx, config = {}) {
               { role: 'system', content: systemText },
               { role: 'user', content: userText },
             ], { provider: reviewer, tool: 'review', temperature: 0.1 }, cfg, exec)
+          const followed = useDsh ? await dshFollowModel(binding) : false
           return result({
             ok: true,
             tier: primary,
             provider: reviewer,
             model: servedModel,
             text: answer.text,
-            note: (note || `reviewed ${primary}-tier draft with ${reviewer}`) + (useDsh ? ' · via DSH gateway' : ' · via plugin gateway'),
+            note: (note || `reviewed ${primary}-tier draft with ${reviewer}`) + (useDsh ? ' · via DSH gateway' : ' · via plugin gateway')
+              + (followed ? ` · DSH 选择器已切到 ${binding.model}` : ''),
             ...answer,
           })
         } catch (err) {
@@ -1313,7 +1343,10 @@ export function apply(ctx, config = {}) {
               }
             }
           } else {
-            lines.push('tip: action=models with a provider id (see your DSH models settings) lists the exact ids')
+            const sel = dshDefaultSelection()
+            lines.push(`DSH 模型选择器现在指向：${sel ? `${sel.provider}/${sel.model}` : '(读不到)'}`)
+            lines.push(`跟随切换 followModel: ${cfg.followModel ? 'on' : 'off'}`)
+            lines.push('tip: action=models with a provider id lists its exact ids; without one it dumps the whole catalog')
           }
         } else if (llm) {
           lines.push('llm service has no listModels — model ids must be typed manually')
@@ -1608,6 +1641,7 @@ export function apply(ctx, config = {}) {
         execution: { provider: live.execution.provider, model: live.execution.model },
         catalog: live.routeMode === 'dsh' && dshLlm() !== null ? await dshCatalog() : { ok: false, providers: [] },
         follow: dshDefaultSelection(),
+        followModel: live.followModel,
         resolved: live.routeMode === 'dsh' && dshLlm() !== null
           ? { decision: await dshResolve('kimi'), execution: await dshResolve('dsf') }
           : null,
@@ -1782,6 +1816,7 @@ export function apply(ctx, config = {}) {
         const patch = {}
         if (Object.prototype.hasOwnProperty.call(body, 'enabled')) patch.enabled = body.enabled
         if (Object.prototype.hasOwnProperty.call(body, 'skillsAuto')) patch.skillsAuto = body.skillsAuto
+        if (typeof body.followModel === 'boolean') patch.followModel = body.followModel
         if (typeof body.routeMode === 'string') {
           const mode = body.routeMode.trim().toLowerCase()
           if (mode !== 'dsh' && mode !== 'direct') { writeJson(res, 400, { ok: false, error: 'routeMode must be dsh or direct' }); return }
