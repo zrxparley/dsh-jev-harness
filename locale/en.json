@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "JEV tiered harness",
-    "description": "Adds a left-sidebar workbench and a composer switch that decide who does the work: OFF steps aside and uses the DSH model gateway, ON sends every instruction to a JEV judge first, which routes judgment tasks to Kimi K3.1Pro and execution tasks to DeepSeek4.1Flash101 through OpenAI-compatible gateways. No tier choice is exposed to the user. Tools: harness_call, harness_classify, harness_review, harness_probe. Fill each gateway's base URL, API key and exact model id in the sidebar page; JEV_API_KEY/KIMI_API_KEY/DSF_API_KEY work as an environment fallback."
+    "description": "Adds a left-sidebar workbench, a composer switch, and a skill router: OFF steps aside and uses the DSH model gateway; ON sends every instruction to a JEV judge, which picks the tier (Kimi K3.1Pro for judgment, DeepSeek4.1Flash101 for execution) and, when the skills switch is on, mounts the best-fitting skill from mattpocock/skills (39 skills: TDD, code-review, diagnosing-bugs, wayfinder, to-spec and more) into the call. Tools: harness_call, harness_classify, harness_review, harness_probe, harness_skill. Fill gateway base URLs, API keys and exact model ids in the sidebar page; JEV_API_KEY/KIMI_API_KEY/DSF_API_KEY work as an environment fallback."
   },
   "jev.panel": "JEV Harness",
   "jev.page.title": "JEV tiered harness",

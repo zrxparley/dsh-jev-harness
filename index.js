@@ -23,6 +23,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import zlib from 'node:zlib'
+import { SKILLS, SKILL_BY_ID, SKILLS_SNAPSHOT } from './skills.js'
 
 export const name = 'jev-harness'
 export const inject = ['tools']
@@ -48,13 +50,14 @@ function num(value, fallback) {
 /** The user-editable values, persisted outside the profile so the settings page can own them. */
 const STORE_FIELDS = [
   'enabled',
+  'skillsAuto',
   'jevBaseUrl', 'jevApiKey', 'jevModel',
   'kimiBaseUrl', 'kimiApiKey', 'kimiModel',
   'dsfBaseUrl', 'dsfApiKey', 'dsfModel',
 ]
 
 /** Booleans are stored as real JSON booleans, not strings. */
-const STORE_BOOLEANS = new Set(['enabled'])
+const STORE_BOOLEANS = new Set(['enabled', 'skillsAuto'])
 
 function truthy(value, fallback) {
   if (typeof value === 'boolean') return value
@@ -144,6 +147,13 @@ function resolveConfig(config = {}, store = readStore()) {
       base: pick(store.dsfBaseUrl, c.dsfBaseUrl, env('DSF_BASE_URL')),
       key: pick(store.dsfApiKey, c.dsfApiKey, env('DSF_API_KEY')),
       model: pick(store.dsfModel, c.dsfModel, env('DSF_MODEL'), 'DeepSeek4.1Flash101'),
+    },
+    skills: {
+      // Mount the best-fitting mattpocock/skills skill into each routed call.
+      auto: store.skillsAuto !== undefined ? truthy(store.skillsAuto, true) : truthy(c.skillsAuto, true),
+      repo: pick(c.skillsRepo, 'mattpocock/skills'),
+      ref: pick(c.skillsRef, 'main'),
+      maxChars: num(c.skillsMaxChars, 6000),
     },
     timeoutMs: num(c.timeoutMs, 120000),
     temperature: Number.isFinite(Number(c.temperature)) ? Number(c.temperature) : 0.2,
@@ -395,6 +405,164 @@ export function apply(ctx, config = {}) {
     return heuristicTier(task)
   }
 
+  /* ------------------------------------------------------- skills routing */
+
+  /**
+   * Catalog of mattpocock/skills. The snapshot is bundled in skills.js so routing
+   * costs zero network calls; `harness_skill action=refresh` rebuilds a local
+   * catalog.json from the live repo and that file wins when present.
+   */
+  const SKILLS_URL_REPO = 'mattpocock/skills'
+
+  function dshHome() {
+    return String(process.env.DSH_HOME || '').trim() || path.join(os.homedir(), '.dsh')
+  }
+
+  function skillsDir() {
+    const dir = path.join(dshHome(), 'jev-harness-skills')
+    try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }) } catch { /* best effort */ }
+    return dir
+  }
+
+  function skillsCatalogFile() {
+    return path.join(skillsDir(), 'catalog.json')
+  }
+
+  /** Bundled snapshot, overridden by a refreshed catalog.json when it parses. */
+  function skillCatalog() {
+    try {
+      const raw = fs.readFileSync(skillsCatalogFile(), 'utf8')
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed?.skills) && parsed.skills.length > 0) {
+        return { snapshot: parsed.snapshot || parsed, skills: parsed.skills, source: 'refreshed' }
+      }
+    } catch { /* fall back to the bundled snapshot */ }
+    return { snapshot: SKILLS_SNAPSHOT, skills: SKILLS, source: 'bundled' }
+  }
+
+  function skillById(id) {
+    const found = skillCatalog().skills.find(s => s.id === id)
+    return found || SKILL_BY_ID.get(id) || null
+  }
+
+  function skillCacheFile(skill) {
+    return path.join(skillsDir(), String(skill.id).replace(/[^a-zA-Z0-9._-]+/g, '__') + '.md')
+  }
+
+  function skillRawUrl(skill, cfg2) {
+    const repo = cfg2.skills.repo || SKILLS_URL_REPO
+    const ref = cfg2.skills.ref || 'main'
+    return `https://raw.githubusercontent.com/${repo}/${ref}/${skill.path}`
+  }
+
+  /** Read a skill body from the local cache, fetching once and persisting it. */
+  async function skillBody(skill, cfg2, exec) {
+    const cached = skillCacheFile(skill)
+    try {
+      const text = fs.readFileSync(cached, 'utf8')
+      if (text.trim()) return { text, cached: true }
+    } catch { /* miss */ }
+    const link = combineSignal(cfg2.timeoutMs, exec && exec.signal)
+    let raw, res
+    try {
+      res = await fetch(skillRawUrl(skill, cfg2), { signal: link.signal })
+      raw = await res.text()
+    } finally {
+      link.dispose()
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${skill.path}`)
+    try {
+      fs.writeFileSync(cached, raw, { mode: 0o600 })
+    } catch { /* cache is optional */ }
+    return { text: raw, cached: false }
+  }
+
+  const SKILL_NONE = 'none'
+
+  /** Token-overlap fallback used when the JEV judge is unreachable. */
+  function heuristicSkill(task) {
+    const words = new Set(String(task).toLowerCase().split(/[^a-z0-9\u4e00-\u9fff]+/).filter(w => w.length > 2))
+    let best = null
+    let bestScore = 0
+    for (const skill of skillCatalog().skills) {
+      const hay = `${skill.id} ${skill.name} ${skill.description}`.toLowerCase()
+      let score = 0
+      for (const w of words) if (hay.includes(w)) score += w.length
+      if (score > bestScore) { bestScore = score; best = skill }
+    }
+    if (!best || bestScore < 6) return { id: SKILL_NONE, confidence: 0, reason: 'no skill matched the wording' }
+    return { id: best.id, confidence: 0, reason: `local keyword match on ${best.id}` }
+  }
+
+  /**
+   * Ask the JEV gateway which skill fits, as one `choice` question over the
+   * catalog (plus `none`). Falls back to the keyword matcher.
+   */
+  async function pickSkill(task, context, cfg2, exec) {
+    const catalog = skillCatalog()
+    if (!cfg2.jev.base) return heuristicSkill(task)
+    const criteria = { [SKILL_NONE]: 'None of the skills applies, or the task is too small to need one.' }
+    for (const skill of catalog.skills) {
+      criteria[skill.id] = `${skill.description.slice(0, 240)}`
+    }
+    try {
+      const base = String(cfg2.jev.base).replace(/\/+$/, '')
+      const url = /\/v1$/.test(base) ? `${base}/systemone` : `${base}/v1/systemone`
+      const link = combineSignal(cfg2.timeoutMs, exec && exec.signal)
+      let raw, res
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(cfg2.jev.key ? { authorization: `Bearer ${cfg2.jev.key}` } : {}),
+          },
+          body: JSON.stringify({
+            model: cfg2.jev.model || 'jev-latest',
+            state: context ? { task, context } : { task },
+            questions: {
+              skill: {
+                type: 'choice',
+                instructions: 'Pick the single agent skill whose instructions would most improve how this task is executed. Choose none when no skill clearly applies.',
+                criteria,
+              },
+            },
+          }),
+          signal: link.signal,
+        })
+        raw = await res.text()
+      } finally {
+        link.dispose()
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${raw.slice(0, 160)}`)
+      const body = JSON.parse(raw)
+      const answer = body?.answers?.skill
+      const choice = answer && (answer.choice || answer.noul)
+      if (choice && (choice === SKILL_NONE || skillById(choice))) {
+        const confidence = Number(answer.confidence)
+        return {
+          id: choice,
+          confidence: Number.isFinite(confidence) ? confidence : 0,
+          reason: `jev ${body.model || cfg2.jev.model} choice=${choice}` +
+            (Number.isFinite(confidence) ? ` (confidence ${confidence.toFixed(2)})` : ''),
+        }
+      }
+      return heuristicSkill(task)
+    } catch (err) {
+      const fallback = heuristicSkill(task)
+      return { ...fallback, reason: `jev skill judge failed (${shortError(err)}); ${fallback.reason}` }
+    }
+  }
+
+  /** The block prepended to a routed call so the model actually follows the skill. */
+  function skillBlock(skill, body, maxChars) {
+    const text = String(body || '').trim()
+    const clipped = text.length > maxChars ? text.slice(0, maxChars) + '\n\n[skill body truncated]' : text
+    return `## Skill: ${skill.name} (${skill.id})\nSource: ${skillRawUrl(skill, cfg)}` +
+      (skill.siblings?.length ? `\nBundled references: ${skill.siblings.join(', ')}` : '') +
+      `\n\n${clipped}`
+  }
+
   const tools = [
     {
       name: 'harness_call',
@@ -410,6 +578,7 @@ export function apply(ctx, config = {}) {
           maxTokens: { type: 'integer', description: 'Optional max completion tokens.' },
           temperature: { type: 'number', description: 'Optional sampling temperature; defaults to 0.2.' },
           provider: { type: 'string', enum: ['auto', 'kimi', 'dsf'], description: 'Force a specific model regardless of tier. Defaults to auto.' },
+          skill: { type: 'string', description: 'Skill to mount into the call. Default auto = the JEV judge picks the best-fitting skill from mattpocock/skills and its instructions are prepended. Use "off" to skip, or an explicit id such as "engineering/tdd".' },
         },
       },
       output: { schema: RESULT_SCHEMA, render: render('Harness call') },
@@ -427,12 +596,40 @@ export function apply(ctx, config = {}) {
           tier = decided.tier
           note = `auto-classified as ${tier}: ${decided.reason}`
         }
+        // Mount the best-fitting skill into the call so the routed model follows it.
+        let mounted = ''
+        let skillNote = ''
+        const asked = typeof args.skill === 'string' ? args.skill.trim() : ''
+        const wantSkill = asked === '' || asked === 'auto' ? (cfg.skills.auto ? 'auto' : 'off') : asked
+        if (wantSkill !== 'off') {
+          try {
+            const chosen = wantSkill === 'auto'
+              ? await pickSkill(task, args.context, cfg, exec)
+              : { id: wantSkill, confidence: 0, reason: 'explicit skill' }
+            if (chosen.id && chosen.id !== SKILL_NONE) {
+              const skill = skillById(chosen.id)
+              if (skill) {
+                const loaded = await skillBody(skill, cfg, exec)
+                mounted = skillBlock(skill, loaded.text, cfg.skills.maxChars)
+                skillNote = ` · skill=${skill.id}${loaded.cached ? ' (cached)' : ''}`
+              } else {
+                skillNote = ` · skill=${chosen.id} not in catalog, ignored`
+              }
+            } else {
+              skillNote = ' · skill=none'
+            }
+          } catch (err) {
+            skillNote = ` · skill lookup failed: ${shortError(err)}`
+          }
+        }
+
         const forced = args.provider === 'kimi' || args.provider === 'dsf'
         const selected = forced ? args.provider : routeFor(tier).key
         const route = selected === 'kimi' ? cfg.kimi : cfg.dsf
         try {
           const answer = await chat(route, [
-            { role: 'system', content: 'You are executing a task delegated by a chief-of-staff agent. Follow the task precisely and return a complete, self-contained answer.' },
+            { role: 'system', content: 'You are executing a task delegated by a chief-of-staff agent. Follow the task precisely and return a complete, self-contained answer.'
+              + (mounted ? `\n\nWhere they apply, follow the skill instructions below. They are reference material, not a script to quote back.\n\n${mounted}` : '') },
             { role: 'user', content: args.context ? `Task:\n${task}\n\nContext:\n${args.context}` : task },
           ], { provider: selected, temperature: args.temperature, maxTokens: args.maxTokens }, cfg, exec)
           const emptyHint = !answer.text && answer.completionTokens > 0
@@ -444,7 +641,7 @@ export function apply(ctx, config = {}) {
             provider: selected,
             model: route.model,
             ...answer,
-            note: (note || `${tier} tier via ${selected}`) + emptyHint,
+            note: (note || `${tier} tier via ${selected}`) + skillNote + emptyHint,
           })
         } catch (err) {
           return result({ tier, provider: selected, model: route.model, note: `call failed: ${shortError(err)}` })
@@ -597,6 +794,95 @@ export function apply(ctx, config = {}) {
         })
       },
     },
+    {
+      name: 'harness_skill',
+      description: 'Work with the mattpocock/skills catalog that harness_call mounts automatically. action=list returns every skill id with its description; action=pick asks the JEV judge which skill fits a task (no skill body is fetched); action=read returns one skill\'s SKILL.md; action=refresh re-reads the live GitHub repo and rewrites the local catalog; action=status reports catalog size, snapshot commit and cache usage. Editing skills is not supported — this is read-only reference material.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          action: { type: 'string', enum: ['list', 'pick', 'read', 'refresh', 'status'], description: 'Defaults to list.' },
+          task: { type: 'string', description: 'The task to route, for action=pick.' },
+          context: { type: 'string', description: 'Optional background for action=pick.' },
+          id: { type: 'string', description: 'Skill id such as "engineering/tdd", for action=read.' },
+        },
+      },
+      output: { schema: RESULT_SCHEMA, render: render('Harness skill') },
+      isConcurrencySafe: true,
+      timeoutMs: cfg.timeoutMs + 5000,
+      async execute(args, exec) {
+        refresh()
+        const action = typeof args.action === 'string' ? args.action : 'list'
+        try {
+          if (action === 'list') {
+            const catalog = skillCatalog()
+            const lines = catalog.skills.map(skill => `${skill.id} — ${skill.description.slice(0, 200)}`)
+            return result({
+              ok: true,
+              provider: 'skills',
+              model: `${catalog.snapshot?.repo || cfg.skills.repo}@${catalog.snapshot?.commit || cfg.skills.ref}`,
+              text: lines.join('\n'),
+              note: `${catalog.skills.length} skills (${catalog.source}); bodies are cached in ${skillsDir()}`,
+            })
+          }
+          if (action === 'pick') {
+            const task = String(args.task || '').trim()
+            if (!task) return result({ note: 'task must be a non-empty string' })
+            const chosen = await pickSkill(task, args.context, cfg, exec)
+            return result({
+              ok: chosen.id !== SKILL_NONE,
+              provider: 'skills',
+              model: chosen.id,
+              text: chosen.id,
+              note: chosen.reason,
+            })
+          }
+          if (action === 'read') {
+            const id = String(args.id || '').trim()
+            const skill = skillById(id)
+            if (!skill) return result({ note: `unknown skill id "${id}" — call harness_skill action=list` })
+            const loaded = await skillBody(skill, cfg, exec)
+            return result({
+              ok: true,
+              provider: 'skills',
+              model: skill.id,
+              text: loaded.text,
+              note: `${skill.bytes} bytes on disk${loaded.cached ? ', served from cache' : ', fetched and cached'} · ${skillRawUrl(skill, cfg)}`,
+            })
+          }
+          if (action === 'status') {
+            const catalog = skillCatalog()
+            return result({
+              ok: true,
+              provider: 'skills',
+              model: `${catalog.snapshot?.repo || cfg.skills.repo}@${catalog.snapshot?.commit || cfg.skills.ref}`,
+              text: JSON.stringify({
+                count: catalog.skills.length,
+                source: catalog.source,
+                snapshot: catalog.snapshot,
+                autoMount: cfg.skills.auto,
+                cached: countCachedSkills(),
+                dir: skillsDir(),
+              }, null, 2),
+              note: `auto-mount is ${cfg.skills.auto ? 'ON' : 'OFF'}`,
+            })
+          }
+          if (action === 'refresh') {
+            const synced = await refreshSkills(cfg)
+            return result({
+              ok: true,
+              provider: 'skills',
+              model: `${synced.repo}@${synced.commit}`,
+              text: `catalog rebuilt: ${synced.count} skills`,
+              note: `added ${synced.added}, removed ${synced.removed}; saved to ${skillsCatalogFile()}`,
+            })
+          }
+          return result({ note: `unknown action "${action}"` })
+        } catch (err) {
+          return result({ provider: 'skills', note: `skill action failed: ${shortError(err)}` })
+        }
+      },
+    },
   ]
 
   /* ------------------------------------------------------- settings bridge */
@@ -673,6 +959,152 @@ export function apply(ctx, config = {}) {
       file: storePath(),
       gateways: { jev: view('jev'), kimi: view('kimi'), dsf: view('dsf') },
       tiers: { decision: 'kimi', execution: 'dsf' },
+      skills: {
+        auto: live.skills.auto,
+        count: skillCatalog().skills.length,
+        source: skillCatalog().source,
+        snapshot: skillCatalog().snapshot,
+        cached: countCachedSkills(),
+        dir: skillsDir(),
+        repo: `https://github.com/${live.skills.repo}`,
+      },
+    }
+  }
+
+  /** Minimal tar reader: enough for a GitHub source tarball (ustar, 512-byte blocks). */
+  function readTar(buf) {
+    const files = new Map()
+    let offset = 0
+    while (offset + 512 <= buf.length) {
+      const header = buf.subarray(offset, offset + 512)
+      if (header.every(byte => byte === 0)) break
+      const field = (start, length) => header.subarray(start, start + length).toString('utf8').replace(/\0.*$/, '')
+      const prefix = field(345, 155)
+      const rawName = field(0, 100)
+      const name = prefix ? `${prefix}/${rawName}` : rawName
+      const size = parseInt(field(124, 12).trim() || '0', 8)
+      const type = field(156, 1)
+      const dataStart = offset + 512
+      if (type === '0' || type === '') {
+        files.set(name, buf.subarray(dataStart, dataStart + size))
+      }
+      offset = dataStart + Math.ceil(size / 512) * 512
+    }
+    return files
+  }
+
+  function parseFrontmatter(source) {
+    const meta = {}
+    const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+    if (!match) return meta
+    for (const line of match[1].split(/\r?\n/)) {
+      const index = line.indexOf(':')
+      if (index <= 0) continue
+      const key = line.slice(0, index).trim()
+      const value = line.slice(index + 1).trim().replace(/^["']|["']$/g, '')
+      if (key) meta[key] = value
+    }
+    return meta
+  }
+
+  /**
+   * Rebuild the catalog from the live repo in ONE request: download the source
+   * tarball, parse it, read every SKILL.md frontmatter, cache the bodies, then
+   * write catalog.json (which then wins over the bundled snapshot).
+   */
+  async function refreshSkills(cfg2) {
+    const repo = cfg2.skills.repo || SKILLS_URL_REPO
+    const ref = cfg2.skills.ref || 'main'
+    const url = `https://codeload.github.com/${repo}/tar.gz/refs/heads/${ref}`
+    const link = combineSignal(cfg2.timeoutMs, undefined)
+    let buf
+    try {
+      const res = await fetch(url, { signal: link.signal })
+      if (!res.ok) throw new Error(`HTTP ${res.status} downloading ${url}`)
+      buf = Buffer.from(await res.arrayBuffer())
+    } finally {
+      link.dispose()
+    }
+    const files = readTar(zlib.gunzipSync(buf))
+    const skills = []
+    const cachedNames = []
+    for (const [fullPath, data] of files) {
+      const match = fullPath.match(/(?:^|\/)skills\/([^/]+)\/([^/]+)\/SKILL\.md$/)
+      if (!match) continue
+      const [, category, dir] = match
+      const source = data.toString('utf8')
+      const meta = parseFrontmatter(source)
+      const siblings = []
+      const siblingPrefix = fullPath.slice(0, fullPath.length - 'SKILL.md'.length)
+      for (const other of files.keys()) {
+        if (!other.startsWith(siblingPrefix)) continue
+        const rest = other.slice(siblingPrefix.length)
+        if (!rest || rest.includes('/')) continue
+        if (other.endsWith('/SKILL.md')) continue
+        siblings.push(rest)
+      }
+      const id = `${category}/${dir}`
+      skills.push({
+        id,
+        category,
+        name: meta.name || dir,
+        description: meta.description || '',
+        path: `skills/${category}/${dir}/SKILL.md`,
+        bytes: data.length,
+        siblings: siblings.sort(),
+      })
+      const cacheFile = path.join(skillsDir(), id.replace(/[^a-zA-Z0-9._-]+/g, '__') + '.md')
+      try {
+        fs.writeFileSync(cacheFile, source, { mode: 0o600 })
+        cachedNames.push(cacheFile)
+      } catch { /* cache is optional */ }
+    }
+    if (skills.length === 0) throw new Error('no skills found in the tarball — check skillsRepo / skillsRef')
+    skills.sort((a, b) => a.id.localeCompare(b.id))
+
+    let commit = ''
+    try {
+      const res = await fetch(`https://api.github.com/repos/${repo}/commits/${ref}`, {
+        headers: { accept: 'application/vnd.github+json' },
+      })
+      if (res.ok) {
+        const body = await res.json()
+        commit = String(body?.sha || '').slice(0, 7)
+      }
+    } catch { /* commit id is informational */ }
+
+    let previous = []
+    try {
+      const old = JSON.parse(fs.readFileSync(skillsCatalogFile(), 'utf8'))
+      if (Array.isArray(old?.skills)) previous = old.skills.map(skill => skill.id)
+    } catch { /* first refresh */ }
+
+    const snapshot = {
+      repo,
+      ref,
+      commit: commit || ref,
+      takenAt: new Date().toISOString(),
+      count: skills.length,
+    }
+    fs.mkdirSync(skillsDir(), { recursive: true, mode: 0o700 })
+    fs.writeFileSync(skillsCatalogFile(), JSON.stringify({ snapshot, skills }, null, 2), { mode: 0o600 })
+    const now = new Set(skills.map(skill => skill.id))
+    const before = new Set(previous)
+    return {
+      repo,
+      commit: snapshot.commit,
+      count: skills.length,
+      added: skills.filter(skill => !before.has(skill.id)).length,
+      removed: previous.filter(id => !now.has(id)).length,
+      cached: cachedNames.length,
+    }
+  }
+
+  function countCachedSkills() {
+    try {
+      return fs.readdirSync(skillsDir()).filter(f => f.endsWith('.md')).length
+    } catch {
+      return 0
     }
   }
 
@@ -695,6 +1127,7 @@ export function apply(ctx, config = {}) {
         if (!body || typeof body !== 'object') { writeJson(res, 400, { ok: false, error: 'malformed JSON body' }); return }
         const patch = {}
         if (Object.prototype.hasOwnProperty.call(body, 'enabled')) patch.enabled = body.enabled
+        if (Object.prototype.hasOwnProperty.call(body, 'skillsAuto')) patch.skillsAuto = body.skillsAuto
         for (const key of ['jev', 'kimi', 'dsf']) {
           const entry = body[key]
           if (!entry || typeof entry !== 'object') continue
@@ -730,6 +1163,21 @@ export function apply(ctx, config = {}) {
           return
         }
         writeJson(res, 200, statusPayload())
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/jev-harness/skills/refresh',
+      handler: async (req, res) => {
+        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        refresh()
+        try {
+          const synced = await refreshSkills(cfg)
+          writeJson(res, 200, { ok: true, ...synced, status: statusPayload() })
+        } catch (err) {
+          writeJson(res, 500, { ok: false, error: shortError(err) })
+        }
       },
     },
     {
@@ -778,6 +1226,7 @@ export function apply(ctx, config = {}) {
           '5. DeepSeek Flash is a reasoning model: if a result comes back with empty text and reasoningTokens, retry that call once with a larger maxTokens (600-1200) rather than answering yourself.',
           '',
           'Helper tools: `harness_classify` shows what the JEV judge would decide without executing (diagnostics only); `harness_review` runs a second-model quality gate on a finished draft; `harness_probe` verifies gateway wiring and the real served model ids.',
+          'Skills: `harness_call` asks the JEV judge which skill from mattpocock/skills fits the task and mounts that skill instructions into the call (skill="off" skips it, an explicit id such as "engineering/tdd" forces one). `harness_skill` lists the catalog, picks for a task, reads one skill body, refreshes from GitHub, or reports status.',
           '',
           'WHILE THE SWITCH IS OFF — these tools return a note instead of routing. That note means the harness has stepped aside: answer with the DSH model gateway and never retry the harness against it.',
         ].join('\n'),

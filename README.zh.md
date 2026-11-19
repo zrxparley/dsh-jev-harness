@@ -17,6 +17,23 @@
 - **开**：插件接管路由。每条指令先由 JEV 判定，再走 Kimi 或 DeepSeek Flash；此时 DSH 自身的模型选择器不参与。
 - **关**：插件完全让位，一切回到 DSH 自己的模型网关。
 
+## 技能路由 · mattpocock/skills
+
+打开「自动挂载 skill」后，`harness_call` 在派活前会多问 JEV 一句：**这件事该不该套一个 skill？** 判定器在 [mattpocock/skills](https://github.com/mattpocock/skills) 的 39 个技能里挑一个（TDD、code-review、diagnosing-bugs、wayfinder、to-spec、to-tickets、triage、wizard、grilling、teach…），也可以回答 `none` 表示这次不需要。挑中的 skill 正文会作为 `## Skill: <name>` 块挂进系统提示，模型照着它干活，而不是凭感觉。
+
+| 动作 | 怎么用 |
+| --- | --- |
+| 自动 | 默认。`harness_call` 自己问、自己挂 |
+| 指定 | `harness_call(skill="engineering/tdd")` |
+| 跳过 | `harness_call(skill="off")` |
+| 浏览 | `harness_skill(action="list")` → 39 个 id + 一句话说明 |
+| 试用判定 | `harness_skill(action="pick", task="…")` → 只回答该用哪个 |
+| 看正文 | `harness_skill(action="read", id="engineering/tdd")` |
+| 同步上游 | `harness_skill(action="refresh")`，或面板上的「刷新技能目录」 |
+
+- 目录随插件内置（零网络判定），`refresh` 只发**一个**请求（GitHub 源码 tarball），直接重建 `~/.dsh/jev-harness-skills/catalog.json` 并把 39 份正文写入缓存；之后 `read` 全部命中本地缓存。
+- 上游仓库更新后，刷新即可，不用升级插件。JEV 网关不可用时退回本地关键词匹配。
+
 ## 工具
 
 | 工具 | 用途 |
@@ -24,6 +41,7 @@
 | `harness_call` | 核心入口，默认 `tier=auto`：JEV 判定 → Kimi / DeepSeek Flash |
 | `harness_classify` | 只问判定器会判成哪一层，不执行（诊断用） |
 | `harness_review` | 第二模型质量闸门：策划稿交 Flash 复核，执行稿交 Kimi 复核 |
+| `harness_skill` | 39 个 skill 的目录：list / pick / read / refresh / status |
 | `harness_probe` | 探测网关连通性，并通过 OpenAI 兼容的 `GET /models` 发现真实 model id |
 
 分层口径：**要不要人来判断对错** → decision（Kimi）；机械执行 → execution（Flash）。未配置 JEV 网关时退回本地关键词启发式，平局归 decision。

@@ -17,6 +17,23 @@ No provider configuration and no route authorization in DSH are required.
 - **ON** — the harness owns routing: JEV judges each instruction, then Kimi or DeepSeek Flash produces the answer; DSH's own model selector is not part of the path.
 - **OFF** — the harness steps aside completely and everything falls back to DSH's own model gateway.
 
+## Skill routing · mattpocock/skills
+
+With "auto-mount skill" on, `harness_call` asks the JEV judge one more question before dispatching: **does this task have a skill that would change how it is executed?** The judge picks one of the 39 skills in [mattpocock/skills](https://github.com/mattpocock/skills) (TDD, code-review, diagnosing-bugs, wayfinder, to-spec, to-tickets, triage, wizard, grilling, teach, …) or answers `none`. The chosen skill's body is prepended as a `## Skill: <name>` block, so the routed model follows it instead of improvising.
+
+| Mode | How |
+| --- | --- |
+| auto | default; `harness_call` picks and mounts |
+| explicit | `harness_call(skill="engineering/tdd")` |
+| skip | `harness_call(skill="off")` |
+| browse | `harness_skill(action="list")` |
+| dry-run the pick | `harness_skill(action="pick", task="…")` |
+| read a body | `harness_skill(action="read", id="engineering/tdd")` |
+| sync upstream | `harness_skill(action="refresh")` or the panel's refresh button |
+
+- The catalog ships bundled (routing costs no network). `refresh` issues exactly one request (the GitHub source tarball), rewrites `~/.dsh/jev-harness-skills/catalog.json` and caches all 39 bodies, so later reads are local.
+- Upstream changes need a refresh, not a plugin upgrade. If the JEV gateway is unreachable, a local keyword matcher takes over.
+
 ## Tools
 
 | Tool | Purpose |
@@ -24,6 +41,7 @@ No provider configuration and no route authorization in DSH are required.
 | `harness_call` | The entry point, `tier=auto` by default: JEV judges, then Kimi / DeepSeek Flash answers |
 | `harness_classify` | Ask what tier the judge would pick, without executing (diagnostics) |
 | `harness_review` | Second-model quality gate: decision drafts reviewed by Flash, execution drafts by Kimi |
+| `harness_skill` | catalog of the 39 skills: list / pick / read / refresh / status |
 | `harness_probe` | Probe gateway reachability and discover real model ids via OpenAI-compatible `GET /models` |
 
 Tier rule: *does a human need to judge whether this is right?* → decision (Kimi); mechanical execution → execution (Flash). Without a JEV gateway the plugin falls back to a local keyword heuristic, ties going to decision.
