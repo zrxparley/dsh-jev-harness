@@ -273,6 +273,9 @@ function recordDecision(entry) {
       confidence: Number.isFinite(entry.confidence) ? Number(entry.confidence) : undefined,
       provider: entry.provider || '',
       model: entry.model || '',
+      host: entry.host && entry.host.provider && entry.host.model
+        ? { provider: String(entry.host.provider), model: String(entry.host.model) }
+        : null,
       skill: entry.skill || '',
       ok: Boolean(entry.ok),
       ms: Math.round(entry.ms || 0),
@@ -1164,6 +1167,7 @@ export function apply(ctx, config = {}) {
           const followed = useDsh ? await dshFollowModel(binding) : false
           recordDecision({
             task, tier, asked: askedTier, provider: selected, model: servedModel, skill: skillId, ok: true,
+            host: useDsh ? { provider: binding.provider, model: binding.model } : null,
             source: judged ? judged.source : 'explicit',
             choice: judged ? judged.choice : tier,
             confidence: judged ? judged.confidence : undefined,
@@ -1183,6 +1187,7 @@ export function apply(ctx, config = {}) {
         } catch (err) {
           recordDecision({
             task, tier, asked: askedTier, provider: selected, model: servedModel, skill: skillId, ok: false,
+            host: useDsh ? { provider: binding.provider, model: binding.model } : null,
             source: judged ? judged.source : 'explicit',
             choice: judged ? judged.choice : tier,
             confidence: judged ? judged.confidence : undefined,
