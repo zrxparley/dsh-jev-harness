@@ -1,5 +1,31 @@
 # 发布 / 上架指南
 
+## 当前状态（2026-11-19）
+
+| 项目 | 状态 |
+| --- | --- |
+| npm 包 | ✅ `@zrxparley/dsh-jev-harness@1.6.2` 已发布，`npm view` + 干净目录安装均验证通过 |
+| GitHub Release | ✅ 已到 [v1.6.2](https://github.com/zrxparley/dsh-jev-harness/releases/tag/v1.6.2)（含预构建 tarball 资产） |
+| DSHmarket PR | ⏳ [awesome-dsh-plugin#16794](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/16794) 已开，仅卡仓库年龄门槛（MIN_AGE_DAYS=1，会自动重跑放行） |
+| 市场条目 tarball | 指向 v1.6.2；npm 已上线后，tarball 只是「跳过构建审批」的备选路径 |
+
+**发下一版的命令**（token 已在 `~/.npmrc`）：
+
+```bash
+# 1) 改版本号（两棵树都要改：这里是发布树）
+npm version patch --no-git-tag-version
+# 2) 发布
+npm publish --access public
+# 3) 打 tag + Release（带资产，市场 tarball 用得上）
+git commit -am "chore: vX.Y.Z" && git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin main --tags
+npm pack --pack-destination /tmp && gh release create vX.Y.Z /tmp/zrxparley-dsh-jev-harness-X.Y.Z.tgz --notes "…"
+# 4) 市场条目 tarball 指到新版本（yml 在 market/data/plugins/ 下）
+```
+
+下面的 1–5 步是最初发布的完整流程，留作参考。
+
+---
+
 本目录是一个**可发布**的 DSH 插件仓库骨架：`@zrxparley/dsh-jev-harness`。
 与之前的本地 `@local/jev-harness`（符号链接、只能本机用）不同，这个包可以发布到 npm，
 并向 DSHmarket 的精选仓库提交条目，让所有 DSH 用户通过 `dsh plugin add @zrxparley/dsh-jev-harness` 安装。
