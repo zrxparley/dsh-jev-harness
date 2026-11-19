@@ -1,0 +1,1 @@
+{"meta": {"title": "JEV 分级调度 Harness", "description": "为 DeepSeek Harness 增加按任务分级的 LLM 工具：harness_call 把决策/高质量任务路由到 Kimi K3.1Pro、把常规执行任务路由到 DeepSeek4.1Flash101，均走 OpenAI 兼容网关。另含 harness_classify（分层判定）、harness_review（第二模型质量闸门）与 harness_probe（连通性探测与真实 model id 发现）。密钥来自环境变量 JEV_API_KEY / KIMI_API_KEY / DSF_API_KEY；各网关 base URL 与精确 model id 在插件设置中配置。", "detail": "docs/DETAIL.md"}}

@@ -1,0 +1,52 @@
+{
+  "name": "@zrxparley/dsh-jev-harness",
+  "version": "1.0.0",
+  "description": "Tiered LLM harness for DeepSeek Harness: decision and quality tasks go to Kimi K3.1Pro, routine execution goes to DeepSeek4.1Flash101, through OpenAI-compatible gateways.",
+  "type": "module",
+  "license": "MIT",
+  "author": "zrxparley",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zrxparley/dsh-jev-harness.git"
+  },
+  "homepage": "https://github.com/zrxparley/dsh-jev-harness#readme",
+  "bugs": {
+    "url": "https://github.com/zrxparley/dsh-jev-harness/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "model-router",
+    "tiered-harness",
+    "kimi",
+    "deepseek",
+    "quality-gate"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
