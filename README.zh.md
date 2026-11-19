@@ -49,6 +49,12 @@
 - 目录随插件内置（零网络判定），`refresh` 只发**一个**请求（GitHub 源码 tarball），直接重建 `~/.dsh/jev-harness-skills/catalog.json` 并把 39 份正文写入缓存；之后 `read` 全部命中本地缓存。
 - 上游仓库更新后，刷新即可，不用升级插件。JEV 网关不可用时退回本地关键词匹配。
 
+## 迭代路线
+
+需求以 GitHub issue 形式维护，每条都带现状证据（文件/行号）、需求与可验收标准；顺序与取舍理由见 [docs/ROADMAP.md](docs/ROADMAP.md)，跟踪 issue 为 [#12](https://github.com/zrxparley/dsh-jev-harness/issues/12)。
+
+一句实话：**「开关打开 = 不走 DSH 网关」目前是约定，不是机制。** 插件能注册工具和一段 system prompt，真正决定请求发给谁的是 DSH 的 provider 层；要让这个语义成立，见 [#5](https://github.com/zrxparley/dsh-jev-harness/issues/5)。
+
 ## 工具
 
 | 工具 | 用途 |

@@ -49,6 +49,12 @@ With "auto-mount skill" on, `harness_call` asks the JEV judge one more question 
 - The catalog ships bundled (routing costs no network). `refresh` issues exactly one request (the GitHub source tarball), rewrites `~/.dsh/jev-harness-skills/catalog.json` and caches all 39 bodies, so later reads are local.
 - Upstream changes need a refresh, not a plugin upgrade. If the JEV gateway is unreachable, a local keyword matcher takes over.
 
+## Roadmap
+
+Iteration items live as GitHub issues with现状 evidence, requirements and acceptance criteria. The ordering and the reasoning behind it are in [docs/ROADMAP.md](docs/ROADMAP.md), tracked by [#12](https://github.com/zrxparley/dsh-jev-harness/issues/12).
+
+Honest status: **"switch ON = traffic does not go through the DSH gateway" is a convention today, not a mechanism.** The plugin can register tools and a system prompt; which endpoint actually serves a request is decided by the DSH provider layer. Making that guarantee real is [#5](https://github.com/zrxparley/dsh-jev-harness/issues/5).
+
 ## Tools
 
 | Tool | Purpose |
