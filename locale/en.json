@@ -266,5 +266,9 @@
   "jev.h006": "Auto-history ON: mounts the last few turns (bounded, never logged).",
   "jev.h007": "Auto-history OFF: only your task/context.",
   "jev.h008": "Turn cap must be an integer between 1 and 50, e.g. 6.",
-  "jev.h009": "Saved: mounts the last {n} turns. Takes effect on the next call."
+  "jev.h009": "Saved: mounts the last {n} turns. Takes effect on the next call.",
+  "jev.k210": "Startup self-check failed — some entries are not registered",
+  "jev.k211": "{p0} {p1}: {p2}",
+  "jev.k212": "slot",
+  "jev.k213": "tool"
 }

@@ -99,7 +99,13 @@ test('开关打开时抢占模型选择器席位，关闭时保持释放', async
   assert.equal(seat.def.name, 'conversation.input.model')
   assert.equal(seat.def.order, 0)
   assert.equal(typeof seat.comp, 'function')
-  assert.deepEqual(on.stub.urls(), ['/api/jev-harness/token', '/api/jev-harness/status'], '先取 token，再问一次状态')
+  // #7 之后 apply() 还会上报一次启动自检；token 并发 bootstrap 已去重，只出现一次。
+  assert.deepEqual(
+    on.stub.urls().filter((url) => !url.includes('/selfcheck')),
+    ['/api/jev-harness/token', '/api/jev-harness/status'],
+    '先取 token，再问一次状态',
+  )
+  assert.ok(on.stub.urls().includes('/api/jev-harness/selfcheck'), '启动自检要上报一次')
   on.stub.restore()
 
   const off = bootClient({ state: 'off' })

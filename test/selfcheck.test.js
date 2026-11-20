@@ -11,6 +11,9 @@ import { pathToFileURL } from 'node:url'
 import {
   boot, callRoute, makeHome, removeHome, stubFetch, writeStore,
 } from './helpers/harness.js'
+import {
+  applyClient, loadClient, render, requireReactOrSkip, visibleText,
+} from './helpers/client.js'
 
 const STATUS = '/api/jev-harness/status'
 const SELFCHECK = '/api/jev-harness/selfcheck'
@@ -134,4 +137,66 @@ test('#7: 上报路由的方法与入参校验', async () => {
   } finally {
     stub.restore(); removeHome(home)
   }
+})
+/* ------------------------- 客户端半（#7 面板红条 + 上报） ------------------------- */
+
+const { pkgs: reactPkgs, skip } = requireReactOrSkip()
+
+test('#7 客户端: slot 注入失败会被记账并上报 /selfcheck', { skip }, async () => {
+  const calls = []
+  const fetchStub = async (url, init) => {
+    calls.push({ url: String(url), init })
+    if (String(url).includes('/token')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, token: 'a'.repeat(64) }) }
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) }
+  }
+  const loaded = loadClient(reactPkgs, { fetch: fetchStub })
+  const ctx = {
+    slots: {
+      inject(name, run) {
+        if (name === 'main') throw new Error('this host has no main slot')
+        const off = run()
+        return typeof off === 'function' ? off : () => {}
+      },
+      register() { return () => {} },
+    },
+    locale: { bind: () => (key) => key },
+    get() { return undefined },
+  }
+  loaded.exports.apply(ctx)
+  await new Promise((resolve) => setTimeout(resolve, 10))
+
+  const post = calls.find((call) => call.url.includes('/selfcheck') && call.init && call.init.method === 'POST')
+  assert.ok(post, '必须上报一次 /selfcheck')
+  const body = JSON.parse(post.init.body)
+  assert.equal(body.slots.ok, false, '有失败时 ok 必须是 false')
+  assert.equal(body.slots.failures[0].name, 'main')
+  assert.match(body.slots.failures[0].error, /no main slot/)
+  assert.ok(body.slots.registered.includes('sidebar.panellist'), '其它 slot 照常登记')
+  assert.ok(body.slots.total >= body.slots.registered.length + body.slots.failures.length)
+})
+
+test('#7 客户端: 自检红条列出失败项与原因，正常时不渲染', { skip }, () => {
+  const loaded = loadClient(reactPkgs)
+  applyClient(loaded)
+  const { SelfCheckBanner } = loaded.exports.__test
+
+  const failed = render(reactPkgs, SelfCheckBanner, {
+    selfCheck: {
+      ok: false,
+      tools: { failures: [{ name: 'harness_call', error: 'host refused to register this tool' }] },
+      slots: { failures: [{ name: 'plugins.bundle.config', error: 'slot key not found' }] },
+    },
+  })
+  const text = visibleText(failed)
+  assert.ok(/role="alert"/.test(failed), '红条必须是 alert')
+  assert.match(text, /启动自检失败/)
+  assert.match(text, /工具 harness_call：host refused/)
+  assert.match(text, /插槽 plugins\.bundle\.config：slot key not found/)
+
+  const ok = render(reactPkgs, SelfCheckBanner, { selfCheck: { ok: true, tools: { failures: [] }, slots: { failures: [] } } })
+  assert.equal(ok, '', '正常时不许显示任何东西')
+  const missing = render(reactPkgs, SelfCheckBanner, { selfCheck: null })
+  assert.equal(missing, '', '还没读到 /status 时也不显示')
 })
