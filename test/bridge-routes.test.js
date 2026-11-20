@@ -81,7 +81,7 @@ test('status / save / toggle / stats / test 五条路由都通，且写盘真的
 
     const callWhileOff = await tools.get('harness_call').execute({ task: 'x', tier: 'execution', skill: 'off' }, {})
     assert.equal(callWhileOff.ok, false)
-    assert.ok(String(callWhileOff.note).includes('switch is OFF'), `关闭时 harness_call 的说明不对：${callWhileOff.note}`)
+    assert.ok(String(callWhileOff.note).includes('已关闭'), `关闭时 harness_call 的说明不对：${callWhileOff.note}`)
     const classifyWhileOff = await tools.get('harness_classify').execute({ task: '评审方案' }, {})
     assert.equal(classifyWhileOff.ok, false)
 

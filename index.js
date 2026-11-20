@@ -843,7 +843,7 @@ function usageReport(hours = 24) {
 // #20: bridge 403 的面向用户文案。抽成常量避免 9 处重复，并留稳定 code 便于将来翻译。
 const LOCAL_ONLY = { ok: false, error: '仅限本机请求', code: 'local-only' }
 
-const DISABLED_NOTE = 'harness switch is OFF (JEV 分级调度已关闭)：不要使用本插件路由，改用 DSH 自身配置的模型网关完成任务。需要恢复时在 JEV 设置面板打开总开关。'
+const DISABLED_NOTE = 'JEV 分级调度已关闭：本插件不接管路由，任务改用 DSH 自身配置的模型网关完成。需要恢复时在 JEV 设置面板打开总开关。'
 
 const DECISION_WORDS = [
   '决策', '判断', '拍板', '权衡', '取舍', '该不该', '要不要', '是否', '评估', '方案',
