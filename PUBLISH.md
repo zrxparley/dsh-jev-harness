@@ -1,5 +1,27 @@
 # 发布 / 上架指南
 
+## 单一源同步（#6）：先 sync，再 pack
+
+**仓库是唯一源**。本地 bundle（`@local/jev-harness`，默认 `../jev-harness`）由脚本从仓库生成，**不要再手工 `cp`**——手工同步正是两棵树长期漂移、版本号各改一份、`cordis.patch.yml` 的 `name` 行残留 `@local/jev-harness` 导致 tarball 无法解析的根因。
+
+```bash
+# 同步：把 index.js / skills.js / criteria.js / lib/client.js / locale/* 复制到 bundle，
+# 并把 bundle 的 package.json name 设为 @local/jev-harness、cordis.patch.yml 的 name 行改写为本地包名。
+# 版本号永远取自仓库 package.json（单一来源）。
+node scripts/sync-bundle.mjs            # 或 npm run sync
+
+# 漂移检测：共享文件 hash 比对 + patch name + 版本一致性，不一致即 exit 1。
+node scripts/sync-bundle.mjs --check    # 或 npm run check:drift
+```
+
+- bundle 目标目录默认 `../jev-harness`，可用环境变量 `JEV_BUNDLE_DIR` 覆盖（CI 即指向临时目录）。
+- **为什么不能靠人肉复制**：bundle 需要的不只是复制——`name` 字段与 `cordis.patch.yml` 的 `name` 行必须改写成**本地**包名，版本号必须与仓库一致。这三处正是人最容易忘、忘了我已经踩过坑（v1.5.0 打包 bug）的地方。脚本把它们固化成必然动作，sync 后立刻自检一次。
+- CI 已加「Bundle single-source drift check」步骤：sync 到临时目录并立即 drift-check，验证机制本身可用。
+
+**发布流程**：改版本号（只改仓库 `package.json`）→ `node scripts/sync-bundle.mjs`（重新生成 bundle）→ `npm run check:drift`（确认无漂移）→ `npm pack` → Release → 市场 yml 指向新 tarball。
+
+---
+
 ## 当前状态（2026-11-19）
 
 | 项目 | 状态 |
@@ -12,8 +34,10 @@
 **发下一版的命令**（token 已在 `~/.npmrc`）：
 
 ```bash
-# 1) 改版本号（两棵树都要改：这里是发布树）
+# 1) 改版本号（只改这一处发布树；本地 bundle 由 sync 生成，见顶部「单一源同步」）
 npm version patch --no-git-tag-version
+# 1b) 重新生成本地 bundle 并确认无漂移
+node scripts/sync-bundle.mjs && node scripts/sync-bundle.mjs --check
 # 2) 发布
 npm publish --access public
 # 3) 打 tag + Release（带资产，市场 tarball 用得上）

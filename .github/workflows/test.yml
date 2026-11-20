@@ -22,6 +22,14 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Syntax check
         run: npm run check
+      # #6: the repo is the only source. Verify the sync script reproduces the
+      # local bundle with zero drift (CI has no hand-maintained copy, so we sync
+      # into a temp dir and immediately drift-check it).
+      - name: Bundle single-source drift check (#6)
+        run: |
+          export JEV_BUNDLE_DIR="$(mktemp -d)/jev-harness"
+          node scripts/sync-bundle.mjs
+          node scripts/sync-bundle.mjs --check
       - name: Offline regression suite
         run: |
           set -o pipefail

@@ -45,7 +45,9 @@
   "scripts": {
     "check": "node --check index.js && node --check lib/client.js",
     "test": "node --test \"test/**/*.test.js\"",
-    "eval:judge": "node test/eval/eval-judge.js"
+    "eval:judge": "node test/eval/eval-judge.js",
+    "sync": "node scripts/sync-bundle.mjs",
+    "check:drift": "node scripts/sync-bundle.mjs --check"
   },
   "devDependencies": {
     "react": "^18.3.1",
