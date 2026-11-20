@@ -23,18 +23,24 @@ judge) are validated against.
 ## Running (manual — needs a key)
 
 The eval hits the **real** JEV gateway, so it is **not** part of `node --test`
-and **not** run in CI. Run it by hand:
+and **not** run in CI (no secret there; with no key it exits 1 with an
+explanation rather than silently passing). Run it by hand:
 
 ```bash
 JEV_BASE_URL="https://your-jev-gateway" \
-JEV_API_KEY="..." \
-node --eval ...   # eval runner lands with the #10 eval:judge script (next step)
+JEV_API_KEY="$DSH_SECRET_JEV_API_KEY" \
+node test/eval/eval-judge.js
+# or, where npm exists:  npm run eval:judge
 ```
 
-> Status: this commit lands the **labels only** (data + integrity test). The
-> `eval:judge` runner that prints the accuracy table / confusion matrix / mean
-> confidence is the rest of #10 and is delivered separately. CI skips the eval
-> because it needs a secret; the offline integrity test (below) always runs.
+- Key comes only from `JEV_API_KEY` (or `DSH_SECRET_JEV_API_KEY`); it is never
+  printed, never written to a file, never in the report.
+- Optional env: `JEV_MODEL` (default `jev-latest`), `JEV_TIMEOUT_MS` (default 30000).
+- Output: per-case ✓/✗, **tier accuracy**, **skill accuracy**, **mean
+  confidence**, a **tier confusion matrix**, and a mismatch/error list.
+- Exit 0 = ran and every case was answered (accuracy may still be <100% — that
+  is a measurement, not a gate). Exit 1 = could not run (no key / no base URL /
+  unreachable gateway / malformed golden set).
 
 ## Offline integrity test
 
