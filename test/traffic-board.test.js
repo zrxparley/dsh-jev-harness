@@ -288,3 +288,23 @@ test('#18: 稀疏时间线右端也标「现在」', { skip }, () => {
   const circles = (html.match(/<circle/g) || []).length
   assert.equal(circles, 2, `每个调用一个点，实际 ${circles}`)
 })
+
+/* ---------- #41 后续：会话下拉改用 /stats.sessions 全量聚合 ---------- */
+
+test('#41: 会话下拉读 /stats.sessions，不再只列 recent 40 条里的会话', { skip }, () => {
+  const TrafficBoardView = bootView()
+  const data = buildPayload({ ...fixture.hour }, 24)
+  // recent 环形里只有 s-new；s-old 已经滑出 40 条，但账本里还有 60 条决策。
+  data.recent = [{ t: new Date().toISOString(), g: 'jev', tool: 'judge', ok: true, kind: 'ok', ms: 100, session: 's-new' }]
+  data.sessions = [
+    { id: 's-new', decisions: 3, recent: 1, total: 4, lastAt: '2026-11-19T22:00:00.000Z' },
+    { id: 's-old', decisions: 60, recent: 0, total: 60, lastAt: '2026-11-18T09:00:00.000Z' },
+    { id: 'unknown', decisions: 2, recent: 0, total: 2, lastAt: '2026-11-18T10:00:00.000Z' },
+  ]
+  data.judgeQuality = { judgedCount: 4, heuristicShare: 0, lowConfidenceShare: 0, tierDistribution: { decision: 0, execution: 4 }, avgJudgeMs: 100, judgeToExecutionMsRatio: 0.1 }
+  const html = render(reactPkgs, TrafficBoardView, { data, hours: 24, error: '', onRange: () => {}, sessionFilter: '', onSessionChange: () => {} })
+  const text = visibleText(html)
+  assert.ok(text.includes('s-old'), '滑出 recent 环形但在账本里的会话必须仍可选')
+  assert.ok(text.includes('s-old（60）'), `选项应带该会话的行数，实际：${text.slice(0, 400)}`)
+  assert.ok(text.includes('未知会话（未携带 sessionId）'), 'unknown 仍是诚实标签')
+})

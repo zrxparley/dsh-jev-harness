@@ -165,3 +165,47 @@ test('#41: /stats exposes judgeAccuracy read from the eval result file, with tim
     stub.restore(); removeHome(home)
   }
 })
+
+test('#41: /stats.sessions lists sessions outside the recent ring (dropdown not ring-bound)', async () => {
+  const home = makeHome('sess-list')
+  writeStore(home)
+  const now = Date.now()
+  // s-old: 60 decisions, none of them in the 40-row recent ring.
+  const decisions = []
+  for (let i = 0; i < 60; i++) {
+    decisions.push({
+      t: new Date(now - (300 - i) * 1000).toISOString(),
+      task: `old-${i}`, tier: 'execution', source: 'jev', ok: true, session: 's-old',
+    })
+  }
+  // s-new: 40 recent rows that fill the ring completely.
+  const recent = []
+  for (let i = 0; i < 40; i++) {
+    recent.push({
+      t: new Date(now - (100 - i) * 1000).toISOString(),
+      g: 'dsf', tool: 'call', ok: true, ms: 10, session: 's-new',
+    })
+  }
+  fs.writeFileSync(usageFile(home), JSON.stringify({ version: 1, hours: {}, days: {}, recent, decisions }))
+  const stub = stubFetch((url) => chatStub(url))
+  try {
+    const { routes } = await boot({ home })
+    const stats = (await callRoute(routes, STATS, { url: `${STATS}?hours=24` })).body
+    assert.ok(Array.isArray(stats.sessions), '/stats.sessions must be an array')
+    const ids = stats.sessions.map(s => s.id)
+    assert.ok(!stats.recent.some(r => r.session === 's-old'), 'precondition: s-old is outside the recent ring')
+    assert.ok(ids.includes('s-old'), `s-old must still be listed: ${ids.join(',')}`)
+    assert.ok(ids.includes('s-new'), 's-new must be listed too')
+    assert.equal(ids[0], 's-new', `sorted by last activity, got ${ids.join(',')}`)
+    const old = stats.sessions.find(s => s.id === 's-old')
+    assert.equal(old.decisions, 60)
+    assert.equal(old.recent, 0)
+    assert.equal(old.total, 60)
+    // ?session= for that session resolves too (no "row not found" surprise).
+    const one = (await callRoute(routes, STATS, { url: `${STATS}?hours=24&session=s-old` })).body
+    assert.equal(one.session.id, 's-old')
+    assert.equal(one.session.decisions.length, 50)
+  } finally {
+    stub.restore(); removeHome(home)
+  }
+})

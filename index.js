@@ -653,6 +653,31 @@ function judgeQuality(decisions, recent) {
   }
 }
 
+/**
+ * #41 follow-up: every session id the ledger still holds, with row counts.
+ *
+ * Why this exists: the panel's session dropdown used to be derived from the
+ * 40-row `recent` ring, so any session that had gone quiet silently vanished.
+ * decisions + recent are the only rows that carry a session, so aggregate over
+ * both. 口径必须说清（不假装完整）：decisions 有全局 500 条上限（trimUsage），
+ * 极老的会话会被淘汰 —— 这里列的是「账本里仍保留的会话」，不是「开机以来所有会话」。
+ */
+function usageSessions(usage) {
+  const byId = new Map()
+  const bump = (id, field, at) => {
+    const key = String(id || 'unknown')
+    if (!byId.has(key)) byId.set(key, { id: key, decisions: 0, recent: 0, lastAt: '' })
+    const row = byId.get(key)
+    row[field] += 1
+    if (at && String(at) > row.lastAt) row.lastAt = String(at)
+  }
+  for (const d of (usage && usage.decisions) || []) bump(d && d.session, 'decisions', d && d.t)
+  for (const r of (usage && usage.recent) || []) bump(r && r.session, 'recent', r && r.t)
+  return [...byId.values()]
+    .map((row) => ({ ...row, total: row.decisions + row.recent }))
+    .sort((a, b) => (b.lastAt || '').localeCompare(a.lastAt || '') || b.total - a.total)
+}
+
 function usageReport(hours = 24) {
   const usage = readUsage()
   const pad = pad2
@@ -2840,6 +2865,9 @@ export function apply(ctx, config = {}) {
         const allDecisions = usage.decisions || []
         const allRecent = usage.recent || []
         report.judgeQuality = judgeQuality(allDecisions, allRecent)
+        // #41 follow-up: the full session list (decisions + recent), so the panel
+        // dropdown is not limited to the 40-row recent ring.
+        report.sessions = usageSessions(usage)
         const wantSession = params.get('session')
         if (wantSession) {
           const sd = allDecisions.filter(d => d.session === wantSession)
