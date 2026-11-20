@@ -126,6 +126,35 @@ test('插件卡 toggle 后，订阅方在 promise resolve 前就拿到新状态'
   }
 })
 
+test('晚到的旧轮询响应被丢弃，不把开关顶回去', { skip }, async () => {
+  const stub = stubFetch((url) => {
+    if (url === '/api/jev-harness/token') return jsonResponse({ ok: true, token: 'a'.repeat(64) })
+    if (url === '/api/jev-harness/toggle') return jsonResponse({ ok: true, enabled: false, state: 'off', gateways: {}, skills: {} })
+    if (url === '/api/jev-harness/status') return jsonResponse({ ok: true, enabled: true, state: 'ready', gateways: {}, skills: {} })
+    return undefined
+  })
+  const loaded = loadClient(reactPkgs, { fetch: globalThis.fetch })
+  applyClient(loaded)
+  try {
+    const api = loaded.exports.__test
+    // 轮询在 toggle 之前发出：记下当时的序号
+    const startSeq = api.bridgeStateSeqNow()
+    await api.setBridgeEnabled(false) // 用户关掉开关，发布新状态
+    // 旧响应此时才回来
+    const applied = api.publishIfUnchanged(startSeq, { ok: true, enabled: true, state: 'ready' })
+    assert.equal(applied, false, '旧轮询必须被丢弃')
+    const seen = []
+    api.subscribeBridgeState((next) => seen.push(next.state))
+    assert.deepEqual(seen, ['off'], '状态不许被旧响应回滚成 ready')
+
+    // 没有并发更新时，轮询照常生效
+    const fresh = api.bridgeStateSeqNow()
+    assert.equal(api.publishIfUnchanged(fresh, { state: 'setup' }), true)
+  } finally {
+    stub.restore()
+  }
+})
+
 test('三个入口都订阅了同一个状态源', () => {
   const source = fs.readFileSync(path.join(REPO, 'lib', 'client.js'), 'utf8')
   const uses = (source.match(/subscribeBridgeState\(/g) || []).length
