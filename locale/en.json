@@ -250,5 +250,12 @@
   "jev.f15c": "; stats restart from here.",
   "jev.f47": "Criteria: ",
   "jev.f48a": "Last toggle failed: ",
-  "jev.f48b": " — click to retry"
+  "jev.f48b": " — click to retry",
+  "jev.k200": "Base URL",
+  "jev.k201": "API Key",
+  "jev.k202": "Model",
+  "jev.k203": "provider",
+  "jev.k204": "model",
+  "jev.k205": "Recent calls",
+  "jev.t60": "In this window: {p0} calls — JEV {p1} · Kimi {p2} · Flash {p3}"
 }

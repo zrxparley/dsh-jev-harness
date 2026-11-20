@@ -76,10 +76,12 @@ test('完整表单只在主面板出现一次；插件卡不重复', { skip }, (
   try {
     const main = findSlot(client.registrations, 'main')
     const seat = findSlot(client.registrations, 'plugins.bundle.config')
-    const mainText = visibleText(render(reactPkgs, main.comp, {}))
-    const seatText = visibleText(render(reactPkgs, seat.comp, { view: 'page' }))
-    assert.ok(mainText.includes('Base URL'), '主面板要有完整表单')
-    assert.equal(seatText.includes('Base URL'), false, '同一屏里表单只能出现一次')
+    // #20 之后表单标签走 T()，不再断言英文文案；#22 要求断言「label 绑到输入框」这条语义。
+    const mainHtml = render(reactPkgs, main.comp, {})
+    const seatHtml = render(reactPkgs, seat.comp, { view: 'page' })
+    assert.ok(/for="jev-gw-kimi-baseUrl"/.test(mainHtml), '主面板要有完整表单（label for 绑定输入框）')
+    assert.ok(/id="jev-gw-kimi-baseUrl"/.test(mainHtml), '主面板的输入框要有 id')
+    assert.equal(/jev-gw-kimi-baseUrl/.test(seatHtml), false, '同一屏里表单只能出现一次')
   } finally {
     client.stub.restore()
   }
