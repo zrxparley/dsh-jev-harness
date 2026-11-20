@@ -20,7 +20,7 @@
  *   env:    JEV_BASE_URL / KIMI_BASE_URL / DSF_BASE_URL, JEV_API_KEY / KIMI_API_KEY / DSF_API_KEY
  */
 
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -1461,8 +1461,47 @@ export function apply(ctx, config = {}) {
     return found || SKILL_BY_ID.get(id) || null
   }
 
-  function skillCacheFile(skill) {
-    return path.join(skillsDir(), String(skill.id).replace(/[^a-zA-Z0-9._-]+/g, '__') + '.md')
+  /** 缓存失效键：`repo@ref` 的短哈希，换仓库/换分支后旧缓存自然不命中（#32）。 */
+  function skillCacheTag(cfg2) {
+    const repo = String((cfg2 && cfg2.skills && cfg2.skills.repo) || SKILLS_URL_REPO)
+    const ref = String((cfg2 && cfg2.skills && cfg2.skills.ref) || 'main')
+    return createHash('sha256').update(`${repo}@${ref}`).digest('hex').slice(0, 8)
+  }
+
+  function skillCacheBase(skill) {
+    return String(skill.id).replace(/[^a-zA-Z0-9._-]+/g, '__')
+  }
+
+  /** `<id>.<repo@ref 前 8 位>.md` —— 文件名本身就是失效键，不用读内容判断版本。 */
+  function skillCacheFile(skill, cfg2) {
+    return path.join(skillsDir(), `${skillCacheBase(skill)}.${skillCacheTag(cfg2)}.md`)
+  }
+
+  const SKILL_CACHE_MIN_BYTES = 16
+
+  /**
+   * 最低完整性检查（#32）：非空、≥16 字节、含 YAML frontmatter 或 `#` 标题。
+   * 半写文件（进程被杀、磁盘满）过不了这几条，按「未命中」重取，
+   * 绝不把截断正文静默注入给模型。
+   */
+  function skillBodyLooksComplete(text) {
+    if (typeof text !== 'string') return false
+    const trimmed = text.trim()
+    if (Buffer.byteLength(trimmed, 'utf8') < SKILL_CACHE_MIN_BYTES) return false
+    if (/^---\s*\n[\s\S]*?\n---\s*(?:\n|$)/.test(trimmed)) return true
+    return /^#{1,6}\s+\S/m.test(trimmed)
+  }
+
+  /** 临时文件 + rename：写一半不会留下一个「看起来有效」的缓存（#32）。 */
+  function writeSkillCacheAtomic(file, text) {
+    const temp = `${file}.${process.pid}-${randomUUID().slice(0, 8)}.tmp`
+    try {
+      fs.writeFileSync(temp, text, { mode: 0o600 })
+      fs.renameSync(temp, file)
+    } catch (err) {
+      try { fs.unlinkSync(temp) } catch { /* 已 rename 或本来就没写成 */ }
+      throw err
+    }
   }
 
   function skillRawUrl(skill, cfg2) {
@@ -1473,10 +1512,12 @@ export function apply(ctx, config = {}) {
 
   /** Read a skill body from the local cache, fetching once and persisting it. */
   async function skillBody(skill, cfg2, exec) {
-    const cached = skillCacheFile(skill)
+    const cached = skillCacheFile(skill, cfg2)
     try {
       const text = fs.readFileSync(cached, 'utf8')
-      if (text.trim()) return { text, cached: true }
+      if (skillBodyLooksComplete(text)) return { text, cached: true, complete: true }
+      // 完整性不通过 = 未命中：坏文件删掉再重取（#32）。
+      try { fs.unlinkSync(cached) } catch { /* 删不掉也照样重取并覆盖 */ }
     } catch { /* miss */ }
     const link = combineSignal(cfg2.timeoutMs, exec && exec.signal)
     let raw, res
@@ -1487,10 +1528,12 @@ export function apply(ctx, config = {}) {
       link.dispose()
     }
     if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${skill.path}`)
-    try {
-      fs.writeFileSync(cached, raw, { mode: 0o600 })
-    } catch { /* cache is optional */ }
-    return { text: raw, cached: false }
+    // 拉回来的正文同样过一遍完整性检查：不合格就不落盘，免得下次又读到残文。
+    const complete = skillBodyLooksComplete(raw)
+    if (complete) {
+      try { writeSkillCacheAtomic(cached, raw) } catch { /* cache is optional */ }
+    }
+    return { text: raw, cached: false, complete }
   }
 
   const SKILL_NONE = 'none'
@@ -2353,7 +2396,8 @@ export function apply(ctx, config = {}) {
               provider: 'skills',
               model: skill.id,
               text: loaded.text,
-              note: `${skill.bytes} bytes on disk${loaded.cached ? ', served from cache' : ', fetched and cached'} · ${skillRawUrl(skill, cfg)}`,
+              note: `${skill.bytes} bytes on disk${loaded.cached ? ', served from cache' : ', fetched and cached'}` +
+                `${loaded.complete === false ? ' · 正文未通过完整性检查（未缓存，下次会重取）' : ''} · ${skillRawUrl(skill, cfg)}`,
             })
           }
           if (action === 'status') {
@@ -2367,7 +2411,7 @@ export function apply(ctx, config = {}) {
                 source: catalog.source,
                 snapshot: catalog.snapshot,
                 autoMount: cfg.skills.auto,
-                cached: countCachedSkills(),
+                cached: countCachedSkills(cfg),
                 dir: skillsDir(),
               }, null, 2),
               note: `auto-mount is ${cfg.skills.auto ? 'ON' : 'OFF'}`,
@@ -2528,7 +2572,7 @@ export function apply(ctx, config = {}) {
         count: skillCatalog().skills.length,
         source: skillCatalog().source,
         snapshot: skillCatalog().snapshot,
-        cached: countCachedSkills(),
+        cached: countCachedSkills(cfg),
         dir: skillsDir(),
         repo: `https://github.com/${live.skills.repo}`,
       },
@@ -2667,9 +2711,10 @@ export function apply(ctx, config = {}) {
     // 只有全部校验通过后才写正文缓存。
     const cachedNames = []
     for (const body of bodies) {
-      const cacheFile = path.join(skillsDir(), body.id.replace(/[^a-zA-Z0-9._-]+/g, '__') + '.md')
+      // 与 skillBody 用同一套命名（含 repo@ref 短哈希）和原子写（#32）。
+      const cacheFile = skillCacheFile({ id: body.id }, cfg2)
       try {
-        fs.writeFileSync(cacheFile, body.source, { mode: 0o600 })
+        writeSkillCacheAtomic(cacheFile, body.source)
         cachedNames.push(cacheFile)
       } catch { /* cache is optional */ }
     }
@@ -2725,9 +2770,11 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  function countCachedSkills() {
+  /** 只数当前 repo@ref 的缓存，旧分支的残留不算「已缓存」（#32）。 */
+  function countCachedSkills(cfg2) {
     try {
-      return fs.readdirSync(skillsDir()).filter(f => f.endsWith('.md')).length
+      const suffix = `.${skillCacheTag(cfg2)}.md`
+      return fs.readdirSync(skillsDir()).filter(f => f.endsWith(suffix)).length
     } catch {
       return 0
     }
