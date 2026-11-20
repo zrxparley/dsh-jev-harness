@@ -3480,6 +3480,17 @@ export function apply(ctx, config = {}) {
         const payload = await statusPayload()
         payload.selfCheck = selfCheckPayload()
         payload.credentialStorage = { ...credentialState }
+        // #23: 轮次级归属。主面板拿不到 sessionId，只有输入框 slot 注入的 session 能过滤；
+        // 过滤不了就如实标 global，绝不把全局「最近一条」冒充成本轮。
+        const params = new URL(req.url || '/api/jev-harness/status', 'http://127.0.0.1').searchParams
+        const wantSession = params.get('session')
+        if (wantSession) {
+          const decisions = readUsage().decisions.filter(d => d && d.session === wantSession)
+          payload.decisions = decisions.slice(-5).reverse()
+          payload.scope = { session: wantSession, filtered: true }
+        } else {
+          payload.scope = { session: '', filtered: false }
+        }
         writeJson(res, 200, payload)
       },
     },

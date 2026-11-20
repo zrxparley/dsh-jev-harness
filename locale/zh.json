@@ -291,5 +291,15 @@
   "jev.k246": "准备开始探测…",
   "jev.k247": "取消",
   "jev.k248": "存在宿主凭据库",
-  "jev.error.methodNotAllowed": "请求方法不允许"
+  "jev.error.methodNotAllowed": "请求方法不允许",
+  "jev.k250": "Kimi",
+  "jev.k251": "Flash",
+  "jev.k252": "未知模型",
+  "jev.k253": "判断",
+  "jev.k254": "执行",
+  "jev.k255": "未经 JEV · 由 DSH 模型回答",
+  "jev.k256": "还没有决策记录",
+  "jev.k257": "本轮",
+  "jev.k258": "最近一次已记录决策（全局）",
+  "jev.k259": "打开 JEV 面板"
 }

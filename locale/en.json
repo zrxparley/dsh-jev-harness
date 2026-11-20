@@ -291,5 +291,15 @@
   "jev.k246": "Starting probe…",
   "jev.k247": "Cancel",
   "jev.k248": "Stored in the host credentials store",
-  "jev.error.methodNotAllowed": "Method not allowed"
+  "jev.error.methodNotAllowed": "Method not allowed",
+  "jev.k250": "Kimi",
+  "jev.k251": "Flash",
+  "jev.k252": "unknown model",
+  "jev.k253": "judged",
+  "jev.k254": "executed",
+  "jev.k255": "no JEV — answered by the DSH model",
+  "jev.k256": "No decision recorded yet",
+  "jev.k257": "This round",
+  "jev.k258": "Last recorded decision (all sessions)",
+  "jev.k259": "Open the JEV panel"
 }
