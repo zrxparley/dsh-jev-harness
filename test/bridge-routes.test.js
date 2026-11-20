@@ -32,6 +32,8 @@ test('status / save / toggle / stats / test 五条路由都通，且写盘真的
     assert.deepEqual(
       [...routes.keys()].sort(),
       [
+        '/api/jev-harness/credentials/cleanup',
+        '/api/jev-harness/credentials/migrate',
         '/api/jev-harness/dsh/catalog',
         '/api/jev-harness/dsh/models',
         '/api/jev-harness/export',

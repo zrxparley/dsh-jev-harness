@@ -159,15 +159,97 @@ function pick(...values) {
 }
 
 /**
+ * #9：密钥存储。优先宿主 credentials（`ctx.credentials` 的 resolve/describe/set/unset），
+ * 拿不到就退回 0600 的明文 JSON，并在 /status 里**明确标注降级原因与文件位置**。
+ * 迁移只写 code 路径，绝不读写真实凭据文件的内容（测试用假服务）。
+ */
+const CREDENTIAL_REFS = {
+  jev: 'JEV_HARNESS_JEV_API_KEY',
+  kimi: 'JEV_HARNESS_KIMI_API_KEY',
+  dsf: 'JEV_HARNESS_DSF_API_KEY',
+}
+
+/** 已从 credentials 读到的密钥（仅内存，不落盘、不进日志）。 */
+const credentialSecrets = { jev: '', kimi: '', dsf: '' }
+
+/** /status 可回显的迁移状态，永远不含密钥值。 */
+const credentialState = {
+  mode: 'unknown',        // credentials | plaintext | unknown
+  service: false,
+  migrated: [],
+  plaintextRemaining: [],
+  reason: '',
+  at: '',
+}
+
+let credentialsService = null
+let credentialReady = Promise.resolve()
+
+/**
  * #21：一个值到底从哪来 —— 本机设置 / 插件配置 / 环境变量 / 没有。
  * 面板要如实显示「来自环境变量 KIMI_API_KEY」，而不是把 env 值当成「本机已保存」。
  */
-function sourceOf(storeValue, configValue, envValue) {
+function sourceOf(storeValue, configValue, envValue, credentialValue) {
   const nonEmpty = (value) => (typeof value === 'string' && value.trim() !== '')
   if (nonEmpty(storeValue)) return 'settings'
+  if (nonEmpty(credentialValue)) return 'credentials'
   if (nonEmpty(configValue)) return 'config'
   if (nonEmpty(envValue)) return 'env'
   return 'none'
+}
+
+/**
+ * 读 credentials 并做幂等迁移：store 里有明文、credentials 里还没有 → set 一次。
+ * 不打印任何密钥值；失败只记「哪个网关 + 原因（已脱敏）」。
+ */
+async function hydrateCredentials() {
+  const svc = credentialsService
+  const stamp = new Date().toISOString()
+  if (!svc) {
+    credentialState.mode = 'plaintext'
+    credentialState.service = false
+    credentialState.reason = 'host exposes no credentials service; keys stay in the 0600 JSON file'
+    credentialState.at = stamp
+    return credentialState
+  }
+  const store = readStore()
+  const migrated = []
+  const problems = []
+  for (const [gateway, ref] of Object.entries(CREDENTIAL_REFS)) {
+    const plaintext = String(store[`${gateway}ApiKey`] || '').trim()
+    let info = null
+    try {
+      info = await svc.describe(ref)
+    } catch (err) {
+      problems.push(`${gateway}: describe failed (${redactSecrets(String((err && err.message) || err))})`)
+    }
+    const alreadyStored = Boolean(info && info.configured && info.source && info.source !== 'environment')
+    if (plaintext && info && info.writable === false) {
+      problems.push(`${gateway}: credentials entry is not writable`)
+    } else if (plaintext && !alreadyStored) {
+      try {
+        await svc.set(ref, plaintext)
+        migrated.push(gateway)
+      } catch (err) {
+        problems.push(`${gateway}: set failed (${redactSecrets(String((err && err.message) || err))})`)
+      }
+    }
+    try {
+      const hit = await svc.resolve(ref)
+      credentialSecrets[gateway] = hit && typeof hit.value === 'string' ? hit.value : ''
+    } catch (err) {
+      credentialSecrets[gateway] = ''
+      problems.push(`${gateway}: resolve failed (${redactSecrets(String((err && err.message) || err))})`)
+    }
+  }
+  credentialState.mode = 'credentials'
+  credentialState.service = true
+  credentialState.migrated = migrated
+  credentialState.plaintextRemaining = Object.keys(CREDENTIAL_REFS)
+    .filter((gateway) => String(store[`${gateway}ApiKey`] || '').trim() !== '')
+  credentialState.reason = problems.slice(0, 3).join('; ')
+  credentialState.at = stamp
+  return credentialState
 }
 
 function resolveConfig(config = {}, store = readStore()) {
@@ -178,27 +260,27 @@ function resolveConfig(config = {}, store = readStore()) {
     enabled: store.enabled !== undefined ? truthy(store.enabled, true) : truthy(c.enabled, true),
     jev: {
       base: pick(store.jevBaseUrl, c.jevBaseUrl, env('JEV_BASE_URL')),
-      key: pick(store.jevApiKey, c.jevApiKey, env('JEV_API_KEY')),
+      key: pick(store.jevApiKey, credentialSecrets.jev, c.jevApiKey, env('JEV_API_KEY')),
       // #21: 来源与 env 变量名，供面板如实显示（也挡住「把 env 值当本机设置」的误读）。
-      keySource: sourceOf(store.jevApiKey, c.jevApiKey, env('JEV_API_KEY')),
+      keySource: sourceOf(store.jevApiKey, c.jevApiKey, env('JEV_API_KEY'), credentialSecrets.jev),
       keyEnv: 'JEV_API_KEY',
       baseSource: sourceOf(store.jevBaseUrl, c.jevBaseUrl, env('JEV_BASE_URL')),
       model: pick(store.jevModel, c.jevModel, env('JEV_MODEL'), 'jev-latest'),
     },
     kimi: {
       base: pick(store.kimiBaseUrl, c.kimiBaseUrl, env('KIMI_BASE_URL')),
-      key: pick(store.kimiApiKey, c.kimiApiKey, env('KIMI_API_KEY')),
+      key: pick(store.kimiApiKey, credentialSecrets.kimi, c.kimiApiKey, env('KIMI_API_KEY')),
       // #21: 来源与 env 变量名，供面板如实显示（也挡住「把 env 值当本机设置」的误读）。
-      keySource: sourceOf(store.kimiApiKey, c.kimiApiKey, env('KIMI_API_KEY')),
+      keySource: sourceOf(store.kimiApiKey, c.kimiApiKey, env('KIMI_API_KEY'), credentialSecrets.kimi),
       keyEnv: 'KIMI_API_KEY',
       baseSource: sourceOf(store.kimiBaseUrl, c.kimiBaseUrl, env('KIMI_BASE_URL')),
       model: pick(store.kimiModel, c.kimiModel, env('KIMI_MODEL'), 'kimi-k3.1-pro'),
     },
     dsf: {
       base: pick(store.dsfBaseUrl, c.dsfBaseUrl, env('DSF_BASE_URL')),
-      key: pick(store.dsfApiKey, c.dsfApiKey, env('DSF_API_KEY')),
+      key: pick(store.dsfApiKey, credentialSecrets.dsf, c.dsfApiKey, env('DSF_API_KEY')),
       // #21: 来源与 env 变量名，供面板如实显示（也挡住「把 env 值当本机设置」的误读）。
-      keySource: sourceOf(store.dsfApiKey, c.dsfApiKey, env('DSF_API_KEY')),
+      keySource: sourceOf(store.dsfApiKey, c.dsfApiKey, env('DSF_API_KEY'), credentialSecrets.dsf),
       keyEnv: 'DSF_API_KEY',
       baseSource: sourceOf(store.dsfBaseUrl, c.dsfBaseUrl, env('DSF_BASE_URL')),
       model: pick(store.dsfModel, c.dsfModel, env('DSF_MODEL'), 'deepseek-v4.1-flash-1017'),
@@ -1683,6 +1765,19 @@ function render(title) {
 export function apply(ctx, config = {}) {
   let cfg = resolveConfig(config)
 
+  // #9: 宿主有 credentials 就用它；没有就退回明文 JSON 并在 /status 标注降级原因。
+  try {
+    const svc = ctx.get('credentials')
+    if (svc && typeof svc.resolve === 'function' && typeof svc.set === 'function') credentialsService = svc
+  } catch { /* 老宿主没有 credentials 服务 */ }
+  credentialReady = hydrateCredentials()
+    .then((state) => { cfg = resolveConfig(config); return state })
+    .catch((err) => {
+      credentialState.mode = 'plaintext'
+      credentialState.reason = `migration failed: ${redactSecrets(String((err && err.message) || err))}`
+      return credentialState
+    })
+
   /** Re-read the saved settings so a change made in the settings page applies to the next call. */
   function refresh() {
     cfg = resolveConfig(config)
@@ -3025,6 +3120,8 @@ export function apply(ctx, config = {}) {
   async function statusPayload() {
     const live = refresh()
     const saved = readStore()
+    // #9: 凭据存储方式与迁移状态（永不含密钥值）。
+    const credentialStorage = { ...credentialState }
     const view = (key) => ({
       baseUrl: live[key].base,
       model: live[key].model,
@@ -3308,7 +3405,68 @@ export function apply(ctx, config = {}) {
         if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         const payload = await statusPayload()
         payload.selfCheck = selfCheckPayload()
+        payload.credentialStorage = { ...credentialState }
         writeJson(res, 200, payload)
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/jev-harness/credentials/migrate',
+      handler: async (req, res) => {
+        if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
+        if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        // #9: 幂等迁移。重复执行不会覆盖已存在的凭据（hydrate 里有 alreadyStored 判断）。
+        await credentialReady.catch(() => {})
+        const state = await hydrateCredentials()
+        refresh()
+        writeJson(res, 200, { ok: true, credentialStorage: { ...state } })
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/jev-harness/credentials/cleanup',
+      handler: async (req, res) => {
+        if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
+        if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        const body = await readJsonBody(req, 4096) || {}
+        // #9: 擦除旧明文必须由用户显式确认，绝不自动执行。
+        if (body.confirm !== true) {
+          writeJson(res, 400, { ok: false, error: 'cleanup requires {"confirm": true}' })
+          return
+        }
+        const svc = credentialsService
+        if (!svc) { writeJson(res, 409, { ok: false, error: 'no credentials service on this host; plaintext kept' }); return }
+        const store = readStore()
+        const cleared = []
+        const skipped = []
+        for (const [gateway, ref] of Object.entries(CREDENTIAL_REFS)) {
+          if (String(store[`${gateway}ApiKey`] || '').trim() === '') continue
+          let stored = ''
+          try {
+            const hit = await svc.resolve(ref)
+            stored = hit && typeof hit.value === 'string' ? hit.value : ''
+          } catch { stored = '' }
+          if (!stored) { skipped.push(gateway); continue }
+          cleared.push(gateway)
+        }
+        if (cleared.length === 0) {
+          writeJson(res, 200, { ok: true, cleared: [], skipped, credentialStorage: { ...credentialState }, note: 'nothing to clear' })
+          return
+        }
+        // 先备份再删键：用户后悔时还能找回。
+        let backup = null
+        try {
+          backup = `${storePath()}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`
+          fs.copyFileSync(storePath(), backup)
+        } catch { backup = null }
+        const patch = {}
+        for (const gateway of cleared) patch[`${gateway}ApiKey`] = ''
+        writeStore(patch)
+        await hydrateCredentials()
+        cfg = resolveConfig(config)
+        writeJson(res, 200, { ok: true, cleared, skipped, backup, credentialStorage: { ...credentialState } })
       },
     },
     {

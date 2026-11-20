@@ -289,5 +289,6 @@
   "jev.k244": "Cancelled — no further gateways were probed.",
   "jev.k245": "(tested with the values currently in the form, not the saved ones)",
   "jev.k246": "Starting probe…",
-  "jev.k247": "Cancel"
+  "jev.k247": "Cancel",
+  "jev.k248": "Stored in the host credentials store"
 }
