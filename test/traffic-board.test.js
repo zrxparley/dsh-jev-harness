@@ -145,3 +145,41 @@ test('#4: judge 行显示 confidence 与来源', { skip }, () => {
   assert.ok(text.includes('0.88'), `judge 行应显示 confidence 0.88，实际：${text.slice(0, 200)}`)
   assert.ok(text.includes('JEV 判定'), 'judge 行应显示来源「JEV 判定」')
 })
+
+test('#41: 判定质量区块显示四指标 + 准确率 + 会话筛选', { skip }, () => {
+  const TrafficBoardView = bootView()
+  const data = buildPayload({
+    ...fixture.hour,
+    recent: [
+      { t: new Date().toISOString(), g: 'jev', tool: 'judge', ok: true, kind: 'ok', ms: 120, session: 'sess-A', choice: 'execution', confidence: 0.9, source: 'jev' },
+      { t: new Date().toISOString(), g: 'dsf', tool: 'call', ok: true, kind: 'ok', ms: 800, session: 'sess-A' },
+    ],
+  }, 24)
+  data.judgeQuality = { judgedCount: 5, heuristicShare: 0.2, lowConfidenceShare: 0.1, tierDistribution: { decision: 2, execution: 3 }, avgJudgeMs: 130, judgeToExecutionMsRatio: 0.16 }
+  data.judgeAccuracy = { tierAccuracy: 0.85, skillAccuracy: 0.7, cases: 20, criteriaVersion: '1.1.0', at: '2026-11-19T22:00:00.000Z' }
+  const html = render(reactPkgs, TrafficBoardView, { data, hours: 24, error: '', onRange: () => {}, sessionFilter: '', onSessionChange: () => {} })
+  const text = visibleText(html)
+  assert.ok(text.includes('判定质量'), '判定质量区块标题')
+  assert.ok(text.includes('判定次数'), '判定次数卡')
+  assert.ok(text.includes('启发式占比'), '启发式占比卡')
+  assert.ok(text.includes('低置信占比'), '低置信占比卡')
+  assert.ok(text.includes('平均判定耗时'), '平均判定耗时卡')
+  assert.ok(text.includes('金标准准确率'), '准确率行')
+  assert.ok(text.includes('85%'), 'tier 准确率 85%')
+  assert.ok(text.includes('全机（所有会话）'), '默认全机选项')
+})
+
+test('#41: unknown 会话标注为「未知会话」，绝不写成「本会话」', { skip }, () => {
+  const TrafficBoardView = bootView()
+  const data = buildPayload({
+    ...fixture.hour,
+    recent: [
+      { t: new Date().toISOString(), g: 'jev', tool: 'judge', ok: true, kind: 'ok', ms: 120, session: 'unknown', choice: 'execution', confidence: 0.9, source: 'heuristic' },
+    ],
+  }, 24)
+  data.judgeQuality = { judgedCount: 1, heuristicShare: 1, lowConfidenceShare: 0, tierDistribution: { decision: 0, execution: 1 }, avgJudgeMs: 100, judgeToExecutionMsRatio: null }
+  const html = render(reactPkgs, TrafficBoardView, { data, hours: 24, error: '', onRange: () => {}, sessionFilter: '', onSessionChange: () => {} })
+  const text = visibleText(html)
+  assert.ok(text.includes('未知会话'), 'unknown 应标注为「未知会话」')
+  assert.ok(!text.includes('本会话'), '绝不能把 unknown 写成「本会话」')
+})
