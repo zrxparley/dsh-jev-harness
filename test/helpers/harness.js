@@ -141,13 +141,23 @@ export function modelsResponse(ids = ['m1']) {
 
 /* --------------------------------------------------------------- req/res */
 
-export function makeReq({ method = 'GET', url = '/', headers = {}, body } = {}) {
+/**
+ * 造一个请求。默认带 Host 与同源 Origin（#26 之后桥路由会校验 Origin）。
+ *   origin: null      → 不带 Origin（模拟 curl / 本地裸进程）
+ *   origin: '<value>' → 用给定 Origin（伪造来源、null、后缀等负例）
+ *   headers 里显式给 origin 时不覆盖。
+ */
+export function makeReq({ method = 'GET', url = '/', headers = {}, body, origin } = {}) {
   const text = body === undefined ? '' : (typeof body === 'string' ? body : JSON.stringify(body))
   const chunks = text === '' ? [] : [Buffer.from(text)]
+  const merged = { host: '127.0.0.1:61434', 'content-type': 'application/json', ...headers }
+  if (origin === null) delete merged.origin
+  else if (typeof origin === 'string') merged.origin = origin
+  else if (merged.origin === undefined) merged.origin = `http://${merged.host}`
   return {
     method,
     url,
-    headers: { host: '127.0.0.1:61434', 'content-type': 'application/json', ...headers },
+    headers: merged,
     async *[Symbol.asyncIterator]() { for (const chunk of chunks) yield chunk },
   }
 }

@@ -1727,12 +1727,34 @@ export function apply(ctx, config = {}) {
   }
 
   /** Only the local desktop page may talk to these routes. */
+  /**
+   * Only the desktop page served by this Host may talk to these routes.
+   *
+   * Threat model (#26): any local process — or any other plugin on this Host —
+   * can send whatever headers it likes, so this gate is a stopgap until the
+   * bridge token lands, not real authentication. What it must stop is the
+   * naive caller: a request with no Origin (curl, a stray script, a page from
+   * another site) must never reach a route that can rewrite base URLs or keys.
+   *
+   * Rules:
+   *  - Host must be a loopback name, optionally with a port.
+   *  - A present Origin must equal `http://<host>` exactly — not `null`, not a
+   *    foreign origin, not a suffix match like `http://127.0.0.1:1.evil.example`.
+   *  - An absent Origin is only allowed for a browser-issued GET/HEAD, proven
+   *    by Fetch metadata (`Sec-Fetch-Site: same-origin|same-site|none`). The
+   *    panel's same-origin GET carries no Origin header at all, so rejecting
+   *    every Origin-less request outright would break the settings page.
+   *    Every write (POST) must carry the exact Origin.
+   */
   function bridgeAllowed(req) {
-    const host = String(req.headers?.host || '')
-    if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(host)) return false
-    const origin = String(req.headers?.origin || '')
-    if (origin !== '' && !origin.endsWith(`://${host}`)) return false
-    return true
+    const host = String(req.headers?.host || '').trim()
+    if (!/^(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/i.test(host)) return false
+    const origin = String(req.headers?.origin || '').trim()
+    if (origin !== '') return origin === `http://${host}`
+    const method = String(req.method || 'GET').toUpperCase()
+    if (method !== 'GET' && method !== 'HEAD') return false
+    const site = String(req.headers?.['sec-fetch-site'] || '').trim().toLowerCase()
+    return site === 'same-origin' || site === 'same-site' || site === 'none'
   }
 
   function writeJson(res, status, body) {
