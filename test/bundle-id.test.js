@@ -48,6 +48,17 @@ test('没有 manifest（单元测试 / 旧宿主）时回退本地 id', () => {
   assert.equal(loadWithManifest([{ id: 'react', url: '/r.js', rev: 'r1' }]).id, '@local/jev-harness')
 })
 
+test('第三方用相似后缀排在前面时，不许选中它', () => {
+  const loaded = loadWithManifest([
+    { id: '@other/fake-jev-harness', url: '/fake.js', rev: 'r1' },
+    { id: '@zrxparley/dsh-jev-harness', url: '/real.js', rev: 'r1' },
+  ])
+  assert.equal(loaded.id, '@zrxparley/dsh-jev-harness', '宽后缀匹配会误选 @other/fake-jev-harness')
+
+  const onlyFake = loadWithManifest([{ id: '@other/fake-jev-harness', url: '/fake.js', rev: 'r1' }])
+  assert.equal(onlyFake.id, '@local/jev-harness', '只有第三方相似 id 时应回退本地包名')
+})
+
 test('manifest 里有多个 entry 时只认自己那一行', () => {
   const loaded = loadWithManifest([
     { id: 'react', url: '/react.js', rev: 'r1' },
