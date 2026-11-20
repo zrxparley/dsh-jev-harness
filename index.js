@@ -528,6 +528,8 @@ function recordDecision(entry) {
         criteriaVersion: entry.criteriaVersion || CRITERIA_VERSION,
         difficulty: entry.difficulty || '',
         escalated: entry.escalated === true,  // #4: was this call upgraded to decision on low confidence?
+        degraded: entry.degraded === true,    // #39: judged, but the judge was not usable
+
         ok: Boolean(entry.ok),
         ms: Math.round(entry.ms || 0),
         pt: entry.pt || 0,
@@ -799,6 +801,8 @@ export function createJevAdapter(deps) {
     let source = 'jev'
     let confidence
     let reason = ''
+    let degraded = false
+    let judgeError = ''
     if (!cfg.enabled) {
       source = 'off'
       reason = 'switch is OFF'
@@ -814,8 +818,10 @@ export function createJevAdapter(deps) {
         tier = judged.tier
         source = 'heuristic'
       } else {
-        // 判定器挂了：不猜 tier，直接走默认模型。
+        // 判定器挂了：不猜 tier，直接走默认模型，并如实标记降级（#39）。
         source = 'fallback'
+        degraded = true
+        judgeError = judged.error || reason || '判定失败'
       }
     }
 
@@ -832,7 +838,7 @@ export function createJevAdapter(deps) {
       binding = await fallbackBinding()
     }
 
-    const value = { tier, source, confidence, reason, binding }
+    const value = { tier, source, confidence, reason, binding, degraded, error: judgeError }
     cache.set(key, { at: Date.now(), value })
     if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value)
     return { ...value, cached: false }
@@ -883,7 +889,7 @@ export function createJevAdapter(deps) {
       provider: binding.key || binding.provider, model: binding.model,
       host: { provider: binding.provider, model: binding.model }, skill: 'none',
       ok: true, ms: Date.now() - startedAt, pt: promptTokens, ct: completionTokens,
-      escalated: false,
+      escalated: false, degraded: decided.degraded === true, error: decided.error || '',
     })
     void firstChunk
   }
@@ -1265,13 +1271,21 @@ export function apply(ctx, config = {}) {
               (Number.isFinite(confidence) ? ` (confidence ${confidence.toFixed(2)})` : ''),
           }
         }
-        return { ...heuristicTier(task), source: 'heuristic', reason: 'jev returned no usable choice; used heuristic' }
+        return {
+          ...heuristicTier(task), source: 'heuristic', degraded: true,
+          error: 'JEV 返回了不可用的 choice',
+          reason: 'jev returned no usable choice; used heuristic',
+        }
       } catch (err) {
         recordUsage({
           gateway: 'jev', model: cfg.jev.model, tool: 'classify', ok: false, status: 0,
           ms: Date.now() - startedAt, error: shortError(err),
         })
-        return { ...heuristicTier(task), source: 'heuristic', reason: `jev router failed (${shortError(err)}); used heuristic` }
+        return {
+          ...heuristicTier(task), source: 'heuristic', degraded: true,
+          error: shortError(err),
+          reason: `jev router failed (${shortError(err)}); used heuristic`,
+        }
       }
     }
     return { ...heuristicTier(task), source: 'heuristic' }
@@ -1835,6 +1849,8 @@ export function apply(ctx, config = {}) {
             confidence: judged ? judged.confidence : undefined,
             difficulty: judged ? judged.difficulty : undefined,
             escalated,
+            degraded: Boolean(judged && judged.degraded),
+            error: judged && judged.degraded ? String(judged.error || '').slice(0, 160) : '',
             ms: Date.now() - routedAt,
             pt: answer.promptTokens || 0,
             ct: answer.completionTokens || 0,
@@ -1857,6 +1873,7 @@ export function apply(ctx, config = {}) {
             confidence: judged ? judged.confidence : undefined,
             difficulty: judged ? judged.difficulty : undefined,
             escalated,
+            degraded: Boolean(judged && judged.degraded),
             ms: Date.now() - routedAt,
             error: shortError(err),
           })

@@ -39,6 +39,7 @@ test/
   panel-boundary.test.js    抛错出卡片 / 诊断信息 / 重新加载恢复（#16）
   entry-convergence.test.js 单一入口 / layout 跳转 / 表单只一次 / setup 隐藏刷新 / 状态广播（#17）
   adapter.test.js           jev/auto 白名单委派 / 递归拒绝 / 降级 / 缓存 / 不回写选择器（#37）
+  degraded.test.js          500 / 超时 / 非法 JSON 的诚实降级与文案（#39）
 
 > 已知未做（#17）：面板首屏的整块顺序重排（状态头 → 摘要 → 最近调用 → 看板 → 高级设置）没有动，
 > 只做了「setup 时隐藏技能库与刷新按钮」。验收四条不含重排，留作后续。
