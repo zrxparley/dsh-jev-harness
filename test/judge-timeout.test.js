@@ -60,9 +60,10 @@ test('/save 接受 100–60000 的 judgeTimeoutMs 并持久化；越界 400', as
   }
 })
 
-test('判定超时真的读 judgeTimeoutMs：50ms 就兜底，不等 5s 的生成超时', async () => {
+test('判定超时真的读 judgeTimeoutMs：merged 主路径与 skill-off 路径都不等生成超时', async () => {
   const home = makeHome('judge-timeout-behavior')
-  writeStore(home, { timeoutMs: 5000, judgeTimeoutMs: 50 })
+  // 判定 120ms（合法下界 100 以上），生成 2000ms：如果判定误用生成超时，两次调用会各跑到 2s。
+  writeStore(home, { timeoutMs: 2000, judgeTimeoutMs: 120 })
   const stub = stubFetch((url, init) => {
     if (String(url).includes('/systemone')) {
       return new Promise((_resolve, reject) => {
@@ -78,17 +79,35 @@ test('判定超时真的读 judgeTimeoutMs：50ms 就兜底，不等 5s 的生�
   })
   try {
     const { tools, routes } = await boot({ home })
-    const startedAt = Date.now()
-    const result = await tools.get('harness_call').execute({ task: '评审这个方案', tier: 'auto', skill: 'off' }, {})
-    const elapsed = Date.now() - startedAt
-    assert.equal(result.ok, true)
-    assert.equal(result.text, '兜底答出来了')
-    assert.ok(elapsed < 1500, `判定应在 50ms 左右超时，实际 ${elapsed}ms（说明读的是 timeoutMs 而不是 judgeTimeoutMs）`)
+
+    // 1) 默认主路径：tier=auto + skill=auto → 走 judgeOnce（merged）
+    const mergedStart = Date.now()
+    const merged = await tools.get('harness_call').execute({ task: '评审这个方案', tier: 'auto', skill: 'auto' }, {})
+    const mergedElapsed = Date.now() - mergedStart
+    assert.equal(merged.ok, true)
+    assert.equal(merged.text, '兜底答出来了')
+    assert.ok(mergedElapsed < 1000, `merged 主路径应在 ~120ms 兜底，实际 ${mergedElapsed}ms`)
+
+    // 2) skill off 路径 → decideTier
+    const offStart = Date.now()
+    const off = await tools.get('harness_call').execute({ task: '评审这个方案', tier: 'auto', skill: 'off' }, {})
+    const offElapsed = Date.now() - offStart
+    assert.equal(off.ok, true)
+    assert.ok(offElapsed < 1000, `decideTier 路径应在 ~120ms 兜底，实际 ${offElapsed}ms`)
+
+    // 3) pickSkill 路径（harness_skill action=pick）也必须是判定超时，不是生成超时
+    const pickStart = Date.now()
+    const picked = await tools.get('harness_skill').execute({ action: 'pick', task: 'build this test-first' }, {})
+    const pickElapsed = Date.now() - pickStart
+    assert.ok(pickElapsed < 1000, `pickSkill 应在 ~120ms 兜底，实际 ${pickElapsed}ms`)
+    assert.equal(picked.provider, 'skills')
 
     const status = (await callRoute(routes, STATUS, { url: STATUS })).body
-    const decision = status.decisions[status.decisions.length - 1]
-    assert.equal(decision.degraded, true)
-    assert.equal(decision.source, 'heuristic')
+    for (const decision of status.decisions.slice(-2)) {
+      assert.equal(decision.source, 'heuristic')
+      assert.equal(decision.degraded, true, '超时降级必须写 degraded:true')
+      assert.ok(String(decision.error).length > 0, '超时降级必须写 error')
+    }
   } finally {
     stub.restore()
     removeHome(home)

@@ -1427,7 +1427,8 @@ export function apply(ctx, config = {}) {
     try {
       const base = String(cfg2.jev.base).replace(/\/+$/, '')
       const url = /\/v1$/.test(base) ? `${base}/systemone` : `${base}/v1/systemone`
-      const link = combineSignal(cfg2.timeoutMs, exec && exec.signal)
+      // 技能判定同样是判定请求：用 judgeTimeoutMs，别用生成超时（#39）。
+      const link = combineSignal(cfg2.judgeTimeoutMs, exec && exec.signal)
       let raw, res
       try {
         res = await fetch(url, {
@@ -1510,7 +1511,8 @@ export function apply(ctx, config = {}) {
       for (const skill of slimSkills(task, 8)) {
         skillCriteria[skill.id] = `${skill.description.slice(0, 240)}`
       }
-      const link = combineSignal(cfg.timeoutMs, exec && exec.signal)
+      // merged 主路径同样是判定：用 judgeTimeoutMs（#39）。
+      const link = combineSignal(cfg.judgeTimeoutMs, exec && exec.signal)
       let raw, res
       try {
         res = await fetch(url, {
@@ -1559,7 +1561,11 @@ export function apply(ctx, config = {}) {
         source: tier ? 'jev' : 'heuristic',
       })
       if (!tier) {
-        return { ...heuristic(), source: 'heuristic', reason: 'jev returned no usable tier; used heuristic' }
+        return {
+          ...heuristic(), source: 'heuristic', degraded: true,
+          error: 'JEV 返回了不可用的 tier',
+          reason: 'jev returned no usable tier; used heuristic',
+        }
       }
       return {
         tier,
@@ -1577,7 +1583,11 @@ export function apply(ctx, config = {}) {
         gateway: 'jev', model: cfg.jev.model, tool: 'judge', ok: false, status: 0,
         ms: Date.now() - startedAt, error: shortError(err), source: 'heuristic',
       })
-      return { ...heuristic(), reason: `jev merged judge failed (${shortError(err)}); used heuristic` }
+      return {
+        ...heuristic(), source: 'heuristic', degraded: true,
+        error: shortError(err),
+        reason: `jev merged judge failed (${shortError(err)}); used heuristic`,
+      }
     }
   }
 

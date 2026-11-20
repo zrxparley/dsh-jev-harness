@@ -15,7 +15,7 @@
 测量方式：`POST https://api.typesafe.ai/v1/systemone`，`choice` 题，criteria 与
 `criteria.js`（`CRITERIA_VERSION=1.0.0`）逐字一致，不经过 shim、不带上游模型。
 
-20 次采样（`shim/measurements/jev-latency-20261120.md`）：
+20 次采样（原始逐条数值随 ADR 入库：`docs/adr/measurements/jev-latency-20261120.md`）：
 
 | 指标 | 值 |
 |---|---:|
