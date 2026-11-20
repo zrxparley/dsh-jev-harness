@@ -69,12 +69,13 @@ const STORE_FIELDS = [
   'executionProvider', 'executionModel',
   'followModel',
   'lowConfidenceThreshold',
+  'judgeTimeoutMs',
 ]
 
 /** Booleans are stored as real JSON booleans, not strings. */
 const STORE_BOOLEANS = new Set(['enabled', 'skillsAuto', 'followModel'])
 // #4: numeric store fields must survive readStore (otherwise the threshold is dropped).
-const STORE_NUMBERS = new Set(['lowConfidenceThreshold'])
+const STORE_NUMBERS = new Set(['lowConfidenceThreshold', 'judgeTimeoutMs'])
 
 function truthy(value, fallback) {
   if (typeof value === 'boolean') return value
@@ -219,6 +220,13 @@ function resolveConfig(config = {}, store = readStore()) {
       return 0.6
     })(),
     timeoutMs: num(c.timeoutMs, 120000),
+    // #39：判定超时独立于生成超时，默认 800ms；超时就兜底，不再等。
+    judgeTimeoutMs: (() => {
+      const raw = [store.judgeTimeoutMs, c.judgeTimeoutMs, env('JEV_JUDGE_TIMEOUT')]
+        .find(value => value !== undefined && value !== null && value !== '')
+      const parsed = Number(raw)
+      return Number.isFinite(parsed) && parsed >= 100 && parsed <= 60000 ? Math.round(parsed) : 800
+    })(),
     temperature: Number.isFinite(Number(c.temperature)) ? Number(c.temperature) : 0.2,
   }
 }
@@ -1222,7 +1230,8 @@ export function apply(ctx, config = {}) {
         // a router, and confidence/probabilities come back with it.
         const base = String(cfg.jev.base).replace(/\/+$/, '')
         const url = /\/v1$/.test(base) ? `${base}/systemone` : `${base}/v1/systemone`
-        const link = combineSignal(cfg.timeoutMs, undefined)
+        // 判定用独立超时（默认 800ms），慢判定不许拖死整轮（#39）。
+        const link = combineSignal(cfg.judgeTimeoutMs, undefined)
         let raw, res
         try {
           res = await fetch(url, {
@@ -2347,6 +2356,9 @@ export function apply(ctx, config = {}) {
       state,
       // #4: echo the judge escalation threshold so the panel input shows the real value.
       lowConfidenceThreshold: live.lowConfidenceThreshold,
+      // #39: judge timeout is separate from the 120s generation timeout.
+      judgeTimeoutMs: live.judgeTimeoutMs,
+      timeoutMs: live.timeoutMs,
       file: storePath(),
       gateways: { jev: view('jev'), kimi: view('kimi'), dsf: view('dsf') },
       tiers: { decision: 'kimi', execution: 'dsf' },
@@ -2604,6 +2616,15 @@ export function apply(ctx, config = {}) {
           const v = Number(body.lowConfidenceThreshold)
           if (!Number.isFinite(v) || v < 0 || v > 1) { writeJson(res, 400, { ok: false, error: 'lowConfidenceThreshold must be a number between 0 and 1' }); return }
           patch.lowConfidenceThreshold = v
+        }
+        // #39: judge timeout must stay in a sane band; reject instead of silently clamping.
+        if (body.judgeTimeoutMs !== undefined) {
+          const v = Number(body.judgeTimeoutMs)
+          if (!Number.isFinite(v) || v < 100 || v > 60000) {
+            writeJson(res, 400, { ok: false, error: 'judgeTimeoutMs must be a number between 100 and 60000' })
+            return
+          }
+          patch.judgeTimeoutMs = Math.round(v)
         }
         if (typeof body.routeMode === 'string') {
           const mode = body.routeMode.trim().toLowerCase()
