@@ -1847,9 +1847,23 @@ export function apply(ctx, config = {}) {
       baseFromSettings: Boolean(saved[`${key}BaseUrl`]),
       keyFromSettings: Boolean(saved[`${key}ApiKey`]),
     })
+    // Honest state for the client (#13). The client must render this, never
+    // infer from `enabled`: a fresh install is enabled but cannot serve.
+    const configured = Boolean(live.kimi.base) && Boolean(live.dsf.base)
+    const recent = readUsage().recent
+    const lastCall = recent.length ? recent[recent.length - 1] : null
+    const state = !live.enabled
+      ? 'off'
+      : !configured
+        ? 'setup'
+        : lastCall && lastCall.ok === false
+          ? 'degraded'
+          : 'ready'
+
     return {
       ok: true,
       enabled: live.enabled,
+      state,
       file: storePath(),
       gateways: { jev: view('jev'), kimi: view('kimi'), dsf: view('dsf') },
       tiers: { decision: 'kimi', execution: 'dsf' },

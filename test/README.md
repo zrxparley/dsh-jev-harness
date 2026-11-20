@@ -33,6 +33,7 @@ test/
   bridge-routes.test.js     status / save / toggle / stats / test 五条设置桥路由
   bundle-id.test.js         客户端 bundle id 与宿主 manifest 的契约（#27）
   model-id.test.js          默认模型 id / 营销名 404 的人话错误（#29）
+  state.test.js             /status 的 state 四态与客户端文案映射（#13）
   release-pack.test.js      按 files 打包/解包后的客户端挂载 smoke（#27）
   usage-hour.test.js        记账与 /stats 小时粒度
   usage-day.test.js         7 天视图读日汇总（v1.6.0 事故回归）
