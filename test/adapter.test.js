@@ -133,11 +133,40 @@ test('开关关闭：不判定，直接默认模型', async () => {
   assert.equal(decisions[0].source, 'off')
 })
 
-test('同 session+turn 复用第一次判定（工具往返不重复问 JEV）', async () => {
-  const { adapter, judgeCalls } = build()
+test('同一轮的工具往返复用判定，但新的 user 请求必须重判', async () => {
+  const tasks = []
+  const { adapter } = build({ decide: async (task) => { tasks.push(task); return { tier: 'execution', source: 'jev', confidence: 0.9 } } })
+  // 第一轮：一次 user + 一次工具往返（追加 assistant 消息，最后一条 user 未变）
   await collect(adapter.stream(options))
-  await collect(adapter.stream({ ...options, messages: [...options.messages, { role: 'assistant', content: 'ok' }] }))
-  assert.equal(judgeCalls(), 1, '同一轮只该问一次判定器')
+  await collect(adapter.stream({ ...options, messages: [...options.messages, { role: 'assistant', content: '调用工具' }, { role: 'tool', content: '{}' }] }))
+  assert.deepEqual(tasks, ['评审这个方案'], '同轮工具往返只问一次')
+
+  // 第二轮：用户发来新请求，必须重新判定
+  await collect(adapter.stream({ ...options, messages: [...options.messages, { role: 'assistant', content: '完成' }, { role: 'user', content: '把这句话翻成英文' }] }))
+  assert.deepEqual(tasks, ['评审这个方案', '把这句话翻成英文'], '新 user 必须重判，不许沿用上一轮 tier')
+})
+
+test('headless 宿主（有 llm 无 webServer）也会注册 adapter', async () => {
+  const registered = []
+  const { boot, makeHome, removeHome, stubFetch, writeStore } = await import('./helpers/harness.js')
+  const home = makeHome('adapter-headless')
+  writeStore(home)
+  const stub = stubFetch(() => undefined)
+  const llm = {
+    registerAdapter(providers, adapter) {
+      registered.push({ providers, adapter })
+      return () => {}
+    },
+  }
+  try {
+    await boot({ home, services: { llm } })
+    assert.equal(registered.length, 1, '无 webServer 时也要注册')
+    assert.deepEqual(registered[0].providers, ['jev'])
+    assert.deepEqual(await registered[0].adapter.listModels('jev'), [{ id: 'auto', name: 'JEV 自动分流 · auto' }])
+  } finally {
+    stub.restore()
+    removeHome(home)
+  }
 })
 
 test('选择器停在 jev/auto 时不回写 sessions.selectModel，连续两轮仍走 adapter', { skip: requireReactOrSkip().skip }, () => {

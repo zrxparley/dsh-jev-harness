@@ -753,8 +753,11 @@ export function createJevAdapter(deps) {
   const CACHE_TTL = 10 * 60 * 1000
   const CACHE_MAX = 64
 
-  function firstUserText(messages) {
-    for (const message of Array.isArray(messages) ? messages : []) {
+  /** 本轮的判定对象 = 最后一条 user 消息（不是会话第一条）。 */
+  function lastUserText(messages) {
+    const list = Array.isArray(messages) ? messages : []
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const message = list[i]
       if (!message || message.role !== 'user') continue
       if (typeof message.content === 'string') return message.content
       if (Array.isArray(message.content)) {
@@ -764,14 +767,24 @@ export function createJevAdapter(deps) {
     return ''
   }
 
+  /**
+   * 缓存粒度是「本轮」，不是整段会话：key 用最后一条 user 的序号+文本。
+   * 工具往返只是追加 assistant/tool 消息，最后一条 user 不变 → 复用；
+   * 用户发来新请求 → 序号变化 → 必须重新判定（Verifier 抓的跨轮命中）。
+   */
   function cacheKey(options, task) {
     const session = String((options && options.sessionId) || 'no-session')
-    return `${session}::${task.slice(0, maxChars)}`
+    const messages = Array.isArray(options && options.messages) ? options.messages : []
+    let lastUserIndex = -1
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i] && messages[i].role === 'user') { lastUserIndex = i; break }
+    }
+    return `${session}::${lastUserIndex}::${task.slice(0, maxChars)}`
   }
 
   async function choose(options) {
     const cfg = readConfig()
-    const task = firstUserText(options && options.messages)
+    const task = lastUserText(options && options.messages)
     const key = cacheKey(options, task)
     const hit = cache.get(key)
     if (hit && Date.now() - hit.at < CACHE_TTL) return { ...hit.value, cached: true }
@@ -859,7 +872,7 @@ export function createJevAdapter(deps) {
       promptTokens, completionTokens,
     })
     recordDecision({
-      task: firstUserText(options && options.messages), tier: decided.tier, asked: 'auto',
+      task: lastUserText(options && options.messages), tier: decided.tier, asked: 'auto',
       source: decided.source, choice: decided.tier, confidence: decided.confidence,
       provider: binding.key || binding.provider, model: binding.model,
       host: { provider: binding.provider, model: binding.model }, skill: 'none',
@@ -2697,8 +2710,6 @@ export function apply(ctx, config = {}) {
       const server = sctx.get('webServer')
       if (!server || typeof server.register !== 'function') return () => {}
       const disposers = bridgeRoutes.map(route => server.register(route))
-      registerJevProvider()
-
       return () => {
         for (const dispose of disposers) {
           try { dispose() } catch { /* best effort during teardown */ }
@@ -2724,8 +2735,8 @@ export function apply(ctx, config = {}) {
    * 注册 `jev/auto` provider（#37）。宿主没有 registerAdapter（或它抛错）时
    * 只退化到 L1 工具，不改其它行为；递归防护与降级都在 adapter 内部。
    */
-  function registerJevProvider() {
-    const llm = dshLlm()
+  function registerJevProvider(providedLlm) {
+    const llm = providedLlm || dshLlm()
     if (!llm || typeof llm.registerAdapter !== 'function') return false
     try {
       const adapter = createJevAdapter({
@@ -2747,6 +2758,12 @@ export function apply(ctx, config = {}) {
       return false
     }
   }
+
+  // llm 服务可能与 webServer 分开到达；adapter 只依赖 llm，所以单独等它，
+  // headless 宿主（有 llm 无 webServer）也能注册（Verifier 提的限制）。
+  ctx.inject(['llm'], (sctx) => {
+    registerJevProvider(sctx.get('llm'))
+  })
 
   ctx.effect(() => {
     const disposers = tools.map(definition => ctx.tools.register(definition))

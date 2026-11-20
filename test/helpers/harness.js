@@ -202,7 +202,7 @@ export async function callRoute(routes, pathname, opts = {}) {
  * 以假 ctx 启动 index.js。config 形如 { jevBaseUrl, ... }，缺省走临时 home 里的 store。
  * 每次 boot 用带 query 的动态 import，避免模块级状态在不同用例间串味。
  */
-export async function boot({ home, config = {} } = {}) {
+export async function boot({ home, config = {}, services = {} } = {}) {
   if (home) process.env.DSH_HOME = home
   const routes = new Map()
   const tools = new Map()
@@ -215,7 +215,7 @@ export async function boot({ home, config = {} } = {}) {
   const ctx = {
     tools: { register(def) { tools.set(def.name, def); return () => tools.delete(def.name) } },
     effect(fn) { return fn() },
-    get(name) { return name === 'webServer' ? server : undefined },
+    get(name) { return name === 'webServer' ? server : services[name] },
     inject(_names, cb) { cb(ctx) },
   }
   const specifier = `${pathToFileURL(ENTRY).href}?boot=${process.pid}-${homeSeq++}`
