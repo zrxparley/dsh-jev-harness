@@ -126,5 +126,6 @@ test('读取失败时把错误显示出来，不装作有数据', { skip }, () =
   const html = render(reactPkgs, TrafficBoardView, { data: null, hours: 24, error: 'HTTP 500', onRange: () => {} })
   const text = visibleText(html)
   assert.ok(text.includes('统计读取失败：HTTP 500'), '错误没有显示给用户')
-  assert.ok(text.includes('还没有数据。') || text.includes('还没有调用记录'), '空数据没有提示')
+  assert.ok(text.includes('正在读取统计'), 'data 没回来时应是骨架')
+  assert.ok(!text.includes('0 次'), '错误态不许渲染假的 0 次')
 })

@@ -55,6 +55,49 @@ test('首帧是骨架：不显示 0 次 / 0 tokens', { skip }, () => {
   assert.ok(!text.includes('0 tokens'), '首帧不许出现 0 tokens')
 })
 
+test('错误态也是骨架：data 没回来就不许渲染数字', { skip }, () => {
+  const { view } = bootView()
+  const text = visibleText(render(reactPkgs, view, { data: null, hours: 24, error: 'HTTP 500', onRange: () => {}, onRefresh: () => {} }))
+  assert.ok(text.includes('正在读取统计'), '错误态也要先给骨架')
+  assert.ok(text.includes('统计读取失败：HTTP 500'), '错误原因要单独可见')
+  assert.ok(!text.includes('0 次'), '错误态不许出现假的 0 次')
+  assert.ok(!text.includes('0 tokens'), '错误态不许出现假的 0 tokens')
+})
+
+test('24h↔7d 切窗：baseline 取新窗口，delta 恒为 0，不出现凭空新增', { skip }, () => {
+  const { api } = bootView()
+  const payload = (calls) => ({
+    totals: {
+      jev: { calls: 0 }, kimi: { calls: 0 }, dsf: { calls },
+    },
+    recent: [],
+  })
+  // 24h 41 → 切 7d（还没数据）→ 7d 300 → 切回 24h（还没数据）→ 24h 41
+  const day = api.trafficWindowState({ hours: 24, baseline: null }, 24, payload(41))
+  assert.equal(day.data !== null, true)
+  assert.equal(day.baseline, 41)
+  assert.equal(day.delta, 0)
+
+  const switchingOut = api.trafficWindowState(day, 168, null)
+  assert.equal(switchingOut.data, null, '切换瞬间必须回到骨架')
+  assert.equal(switchingOut.baseline, null)
+
+  const week = api.trafficWindowState(switchingOut, 168, payload(300))
+  assert.equal(week.baseline, 300, 'baseline 必须取新窗口的总量')
+  assert.equal(week.delta, 0, '换窗口不许冒出「打开后新增」')
+
+  const switchingBack = api.trafficWindowState(week, 24, null)
+  assert.equal(switchingBack.baseline, null)
+  const back = api.trafficWindowState(switchingBack, 24, payload(41))
+  assert.equal(back.baseline, 41)
+  assert.equal(back.delta, 0)
+
+  for (const state of [day, week, back]) {
+    const line = api.liveLine({ data: state.data, rows: [], updatedAt: Date.now(), polls: 1, baseline: state.baseline })
+    assert.equal(line.includes('打开后新增'), false, `不该出现凭空新增：${line}`)
+  }
+})
+
 test('0 调用：off / setup / ready 三选一卡片，文案逐字', { skip }, () => {
   const { view } = bootView()
   const cases = [
