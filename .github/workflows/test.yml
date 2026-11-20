@@ -1,7 +1,11 @@
 name: test
 
-# 每次 push / PR 都跑一遍离线回归。测试内部把 fetch 全部 stub 掉，
-# 进程里不发起任何真实网络请求；只有 npm install 这一步会取 react 依赖。
+# 口径（Chief 裁决，2026-11-19）：
+#   `npm install` 属于构建期依赖安装，不算「测试发起真实网络请求」；
+#   #1 那条约束的验收单位是测试进程 —— 测试进程内 fetch 全部被 stub，
+#   未 stub 的请求会直接抛错，不会悄悄打外网。
+#   但依赖装不上会让渲染用例 skip 之后仍然 exit 0，伪装成全绿。
+#   所以下面单独一步把 skipped 变成硬断言：CI 里只要 skipped > 0 就红。
 on:
   push:
   pull_request:
@@ -14,9 +18,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install devDependencies (react / react-dom for the render tests)
+      - name: Install build-time devDependencies (react / react-dom)
         run: npm install --no-audit --no-fund
       - name: Syntax check
         run: npm run check
       - name: Offline regression suite
-        run: npm test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.txt
+      - name: Guard - no skipped tests
+        run: |
+          if grep -qE 'skipped [1-9][0-9]*' test-output.txt; then
+            echo "::error::有测试被跳过（react / react-dom 没装上？）—— CI 不允许 skipped > 0"
+            grep -E 'skipped [0-9]+' test-output.txt
+            exit 1
+          fi
+          grep -qE 'skipped 0' test-output.txt || { echo "::error::输出里找不到 skipped 统计，无法确认没有跳过"; exit 1; }
+          echo "skipped 0 confirmed"
