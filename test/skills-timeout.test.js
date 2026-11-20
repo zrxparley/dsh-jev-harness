@@ -36,14 +36,16 @@ function hangingFetch(init) {
 
 test('commit 请求挂住：刷新在总预算内完成，commit 降级为 null', async () => {
   const home = makeHome('skills-timeout')
-  writeStore(home)
+  // #33: timeoutMs is now store-first, so the small total budget is set via the
+  // store (not boot config) — the test still asserts "done within budget + commit:null".
+  writeStore(home, { timeoutMs: 300 })
   const stub = stubFetch((url, init) => {
     if (String(url).includes('codeload.github.com')) return bufferResponse(tarball())
     if (String(url).includes('api.github.com')) return hangingFetch(init)
     return undefined
   })
   try {
-    const { routes } = await boot({ home, config: { timeoutMs: 300 } })
+    const { routes } = await boot({ home })
     const startedAt = Date.now()
     const refreshed = await callRoute(routes, REFRESH, { method: 'POST' })
     const elapsed = Date.now() - startedAt

@@ -70,12 +70,13 @@ const STORE_FIELDS = [
   'followModel',
   'lowConfidenceThreshold',
   'judgeTimeoutMs',
+  'timeoutMs',
 ]
 
 /** Booleans are stored as real JSON booleans, not strings. */
 const STORE_BOOLEANS = new Set(['enabled', 'skillsAuto', 'followModel'])
 // #4: numeric store fields must survive readStore (otherwise the threshold is dropped).
-const STORE_NUMBERS = new Set(['lowConfidenceThreshold', 'judgeTimeoutMs'])
+const STORE_NUMBERS = new Set(['lowConfidenceThreshold', 'judgeTimeoutMs', 'timeoutMs'])
 
 function truthy(value, fallback) {
   if (typeof value === 'boolean') return value
@@ -219,7 +220,10 @@ function resolveConfig(config = {}, store = readStore()) {
       }
       return 0.6
     })(),
-    timeoutMs: num(c.timeoutMs, 120000),
+    // #33: generation timeout is dynamic — read the saved store value first so a
+    // /save takes effect on the next call's combineSignal (the tool-REGISTRATION
+    // timeout is a separate snapshot; see the reload notice in /save).
+    timeoutMs: num(store.timeoutMs !== undefined ? store.timeoutMs : c.timeoutMs, 120000),
     // #39：判定超时独立于生成超时，默认 800ms；超时就兜底，不再等。
     judgeTimeoutMs: (() => {
       const raw = [store.judgeTimeoutMs, c.judgeTimeoutMs, env('JEV_JUDGE_TIMEOUT')]
@@ -2240,7 +2244,7 @@ export function apply(ctx, config = {}) {
     },
     {
       name: 'harness_probe',
-      description: 'Check connectivity and discover the exact model IDs served by a gateway. Uses the OpenAI-compatible GET /models endpoint. Call this once after configuring a base URL and key, especially when the configured marketing model name may not match the gateway model ID.',
+      description: 'Check connectivity and discover the exact model IDs served by a gateway. Uses the OpenAI-compatible GET /models endpoint. Call this once after configuring a base URL and key, especially when the configured marketing model name may not match the gateway model ID. #33: this probe is ALLOWED even when the harness switch is OFF — it is 仅探测，不接管 (a diagnostic for why the switch cannot be turned on); it never routes work.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -2339,7 +2343,7 @@ export function apply(ctx, config = {}) {
           ok: okCount > 0,
           provider: which.join(','),
           text: lines.join('\n'),
-          note: `${okCount}/${which.length} gateways reachable${cfg.enabled ? '' : ' (harness switch is OFF — probe still works, but harness_call/classify/review refuse to route)'}`,
+          note: `${okCount}/${which.length} gateways reachable${cfg.enabled ? '' : ' · 仅探测，不接管：总开关已关闭，本次仅做连通探测，不路由任何任务；harness_call/classify/review 已让位'}`,
         })
       },
     },
@@ -2829,6 +2833,17 @@ export function apply(ctx, config = {}) {
           }
           patch.judgeTimeoutMs = Math.round(v)
         }
+        // #33: generation timeout. Gateway calls pick it up on the next call via
+        // refresh(), but the tool-REGISTRATION timeout was fixed at apply() — so we
+        // must tell the user a reload is needed for the tool layer.
+        if (body.timeoutMs !== undefined) {
+          const v = Number(body.timeoutMs)
+          if (!Number.isFinite(v) || v <= 0) {
+            writeJson(res, 400, { ok: false, error: 'timeoutMs must be a positive number' })
+            return
+          }
+          patch.timeoutMs = Math.round(v)
+        }
         if (typeof body.routeMode === 'string') {
           const mode = body.routeMode.trim().toLowerCase()
           if (mode !== 'dsh' && mode !== 'direct') { writeJson(res, 400, { ok: false, error: 'routeMode must be dsh or direct' }); return }
@@ -2855,7 +2870,13 @@ export function apply(ctx, config = {}) {
           writeJson(res, 500, { ok: false, error: `could not save: ${shortError(err)}` })
           return
         }
-        writeJson(res, 200, await statusPayload())
+        const payload = await statusPayload()
+        if (patch.timeoutMs !== undefined) {
+          // #33: honest about the registration-snapshot. The gateway-call timeout is
+          // already live; the tool-registration timeout only re-reads on plugin reload.
+          payload.notice = `timeoutMs 已保存为 ${patch.timeoutMs}ms：网关调用即刻按新值生效；但工具注册时的超时是注册期快照，需重载插件后工具层才按 ${patch.timeoutMs}ms 生效。`
+        }
+        writeJson(res, 200, payload)
       },
     },
     {
