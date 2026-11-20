@@ -26,6 +26,7 @@ test('criteria exposes tier / skill / difficulty for BOTH en and zh', () => {
     assert.equal(c.version, CRITERIA_VERSION, `${lang}: version not pinned`)
     // tier
     assert.ok(c.tier.decision && c.tier.execution, `${lang}: tier criteria incomplete`)
+    assert.ok(c.tierInstructions, `${lang}: missing tier instructions (switching lang must not mix EN instructions into ZH criteria)`)
     // skill (fixed none criterion + instructions)
     assert.ok(c.skillNone, `${lang}: missing skill none criterion`)
     assert.ok(c.skillInstructions, `${lang}: missing skill instructions`)
@@ -71,4 +72,15 @@ test('index.js no longer hardcodes the tier/skill criteria strings (single sourc
 
 test('difficulty is a 3-level choice set (trivial/normal/hard), matching #38', () => {
   assert.deepEqual(Object.keys(DIFFICULTY_CRITERIA).sort(), ['hard', 'normal', 'trivial'])
+})
+
+test('every dimension has instructions in BOTH languages (no EN/ZH mixing on switch)', () => {
+  for (const lang of ['en', 'zh']) {
+    const c = CRITERIA[lang]
+    for (const key of ['tierInstructions', 'skillInstructions', 'difficultyInstructions']) {
+      assert.ok(typeof c[key] === 'string' && c[key].length > 0, `${lang}.${key} missing`)
+    }
+  }
+  // en and zh instructions must actually differ (not a copy-paste of English into zh)
+  assert.notEqual(CRITERIA.en.tierInstructions, CRITERIA.zh.tierInstructions, 'zh tier instructions must not be the English text')
 })

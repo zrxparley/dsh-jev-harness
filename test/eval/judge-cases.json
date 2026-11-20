@@ -1,6 +1,6 @@
 {
   "$comment": "JEV judge golden set (#10). 20 hand-labelled cases. Each: task -> expected tier + expected skill + difficulty. criteriaVersion pins the criteria wording these labels were written against; the criteria guard test fails if criteria.js version bumps without re-labelling this file. tier/skill are live dimensions today; difficulty is FORWARD-DECLARED for #38 (merged judge) and is NOT asserted until that issue lands — see test/eval/README.md. skill='none' means no catalog skill applies. skill ids MUST exist in the bundled catalog (skills.js, 39 skills); the eval harness asserts referential integrity.",
-  "criteriaVersion": "1.0.0",
+  "criteriaVersion": "1.1.0",
   "catalogSnapshot": "mattpocock/skills@5863806",
   "skillCount": 39,
   "cases": [

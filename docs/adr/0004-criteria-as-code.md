@@ -64,3 +64,25 @@ Criteria are code, versioned, single-sourced, and guarded.
 - The zh/en accuracy comparison and the first live accuracy baseline both need
   `JEV_API_KEY`. Until that key is authorised for the eval runner, those two
   numbers are recorded as **not yet measured**, not assumed.
+
+
+## Addendum (2026-11-19)
+
+**Versioning covers added dimensions, not just edited wording.** Going from a
+tier-only criteria set to tier+skill+difficulty bumps the version (`1.0.0` ->
+`1.1.0`) even though the `en` tier strings themselves did not change. Without
+this, the ledger cannot tell "a decision made when only tier existed" apart from
+"a decision made with all three dimensions". Bump on any change to the criteria
+*set*, not only to a single string.
+
+**Single-question entries stay single-question (#38).** `harness_classify` and
+`harness_review` only need a tier, so they keep calling `decideTier` (one
+question). They are NOT routed through the merged `judgeOnce`: paying for skill +
+difficulty tokens on a tier-only entry buys nothing. The merged judge exists to
+remove the second round-trip on the *main* `harness_call` path (tier + skill both
+auto), not to force every entry through three questions.
+
+**zh completeness is guarded.** Each language set carries instructions for every
+dimension (`tierInstructions` / `skillInstructions` / `difficultyInstructions`),
+so switching `CRITERIA_LANG` can never send English instructions next to Chinese
+criteria. A guard test asserts the two languages' instructions differ.

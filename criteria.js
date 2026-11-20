@@ -31,7 +31,7 @@
  */
 
 /** Semver of the criteria wording. Bump on any criteria text change. */
-export const CRITERIA_VERSION = '1.0.0'
+export const CRITERIA_VERSION = '1.1.0'
 
 /** Which language set is sent to the gateway. Switch only after a measured zh/en comparison. */
 export const CRITERIA_LANG = 'en'
@@ -57,6 +57,9 @@ const TIER_ZH = Object.freeze({
 /** The fixed `none` option criterion (the per-skill criteria come from the catalog at runtime). */
 const SKILL_NONE_EN = 'None of the skills applies, or the task is too small to need one.'
 const SKILL_NONE_ZH = '没有任何技能适用，或任务太小不需要技能。'
+
+const TIER_INSTRUCTIONS_EN = 'Decide which tier should handle this task.'
+const TIER_INSTRUCTIONS_ZH = '判断这个任务该由哪一层来处理。'
 
 const SKILL_INSTRUCTIONS_EN =
   'Pick the single agent skill whose instructions would most improve how this task is executed. Choose none when no skill clearly applies.'
@@ -87,6 +90,7 @@ export const CRITERIA = {
   en: {
     version: CRITERIA_VERSION,
     tier: TIER_EN,
+    tierInstructions: TIER_INSTRUCTIONS_EN,
     skillNone: SKILL_NONE_EN,
     skillInstructions: SKILL_INSTRUCTIONS_EN,
     difficulty: DIFFICULTY_EN,
@@ -95,6 +99,7 @@ export const CRITERIA = {
   zh: {
     version: CRITERIA_VERSION,
     tier: TIER_ZH,
+    tierInstructions: TIER_INSTRUCTIONS_ZH,
     skillNone: SKILL_NONE_ZH,
     skillInstructions: SKILL_INSTRUCTIONS_ZH,
     difficulty: DIFFICULTY_ZH,
@@ -109,7 +114,7 @@ export const ACTIVE = CRITERIA[CRITERIA_LANG]
 
 /** Tier criteria in the active language. Keys are the exact `choice` values the gateway returns. */
 export const TIER_CRITERIA = ACTIVE.tier
-export const TIER_INSTRUCTIONS = 'Decide which tier should handle this task.'
+export const TIER_INSTRUCTIONS = ACTIVE.tierInstructions
 
 /** Skill question pieces in the active language. (`SKILL_NONE_CRITERIA` is the
  *  none-option's description text, NOT the 'none' key — index.js owns that key.) */
