@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { setGatewayFetch, resetGatewayFetch } from '../../lib/gateway-http.js'
 
 /** 仓库根目录（test/helpers/ 往上两层）。 */
 export const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -97,17 +98,24 @@ export function bufferResponse(buffer, status = 200) {
  */
 export function stubFetch(handler) {
   const seen = []
-  globalThis.fetch = async (url, init = {}) => {
+  const install = async (url, init = {}) => {
     const href = String(url)
     seen.push({ url: href, method: init.method || 'GET', body: init.body, headers: init.headers || {} })
     const response = handler(href, init, seen)
     if (response === undefined) throw new Error(`unstubbed network request: ${href}`)
     return response
   }
+  globalThis.fetch = install
+  // #38：网关请求改走 lib/gateway-http.js（常驻 Agent）。同一个 stub 也要装到
+  // 那条传输上，否则测试会绕过桩、真的发网络请求。
+  setGatewayFetch(install)
   return {
     seen,
     urls: () => seen.map((entry) => entry.url),
-    restore() { globalThis.fetch = REAL_FETCH },
+    restore() {
+      globalThis.fetch = REAL_FETCH
+      resetGatewayFetch()
+    },
   }
 }
 

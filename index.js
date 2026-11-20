@@ -26,6 +26,7 @@ import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
 import { SKILLS, SKILL_BY_ID, SKILLS_SNAPSHOT } from './skills.js'
+import { gatewayFetch } from './lib/gateway-http.js'
 import { TIER_CRITERIA, TIER_INSTRUCTIONS, SKILL_NONE_CRITERIA, SKILL_INSTRUCTIONS, DIFFICULTY_CRITERIA, DIFFICULTY_INSTRUCTIONS, CRITERIA_VERSION } from './criteria.js'
 
 const PACKAGE_VERSION = (() => {
@@ -1509,7 +1510,7 @@ async function listGatewayModels(route, cfg2) {
   if (!url) return []
   const link = combineSignal(timeoutFor('probe', cfg2), undefined)
   try {
-    const res = await fetch(url, {
+    const res = await gatewayFetch(url, {
       headers: route.key ? { authorization: `Bearer ${route.key}` } : {},
       signal: link.signal,
     })
@@ -1548,7 +1549,7 @@ async function chat(route, messages, opts, cfg, exec) {
     startedAt = Date.now()
     const link = combineSignal(timeoutFor(opts.provider === 'kimi' ? 'decision' : 'execution', cfg), exec?.signal)
     try {
-      const res = await fetch(url, {
+      const res = await gatewayFetch(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

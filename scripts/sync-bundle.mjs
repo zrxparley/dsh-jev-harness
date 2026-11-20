@@ -30,7 +30,7 @@ const LOCAL_NAME = '@local/jev-harness'
 const CHECK = process.argv.includes('--check')
 
 /** Files that must be byte-identical between repo and bundle after sync. */
-const SHARED_FILES = ['index.js', 'skills.js', 'criteria.js', 'lib/client.js', 'icon.svg']
+const SHARED_FILES = ['index.js', 'skills.js', 'criteria.js', 'lib/client.js', 'lib/gateway-http.js', 'icon.svg']
 const SHARED_DIRS = ['locale']
 const PATCH_FILE = 'cordis.patch.yml'
 
