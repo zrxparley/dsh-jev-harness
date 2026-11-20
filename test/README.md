@@ -33,7 +33,10 @@ test/
   bridge-routes.test.js     status / save / toggle / stats / test 五条设置桥路由
   usage-hour.test.js        记账与 /stats 小时粒度
   usage-day.test.js         7 天视图读日汇总（v1.6.0 事故回归）
+  usage-integrity.test.js   账本损坏隔离 / 原子写 / 只读盘 / 并发记账（#25 回归）
+  panel-warning.test.js     账本损坏时面板上的可见提示
   skills.test.js            技能目录 / 刷新 / JEV pick
+  helpers/record-child.js   并发用例的子进程：往同一个 DSH_HOME 连记 N 次
 ```
 
 ## 三条硬规则

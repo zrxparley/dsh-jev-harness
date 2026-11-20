@@ -215,33 +215,170 @@ function emptyUsage() {
   return { version: USAGE_VERSION, hours: {}, days: {}, recent: [], decisions: [] }
 }
 
-function readUsage() {
+/**
+ * 账本损坏的警告：readUsage() 解析失败时把原文件改名隔离，并记下这条，
+ * usageReport() 原样带给面板（新增字段，旧客户端忽略即可）。
+ * 进程内粘性保留，避免「面板刷新一次提示就消失」。
+ */
+let usageWarning = null
+
+function usageStat(file) {
   try {
-    const parsed = JSON.parse(fs.readFileSync(usagePath(), 'utf8'))
-    if (!parsed || typeof parsed !== 'object') return emptyUsage()
-    return {
-      version: USAGE_VERSION,
-      hours: parsed.hours && typeof parsed.hours === 'object' ? parsed.hours : {},
-      days: parsed.days && typeof parsed.days === 'object' ? parsed.days : {},
-      recent: Array.isArray(parsed.recent) ? parsed.recent : [],
-      decisions: Array.isArray(parsed.decisions) ? parsed.decisions : [],
-    }
+    const stat = fs.statSync(file)
+    return { ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs }
   } catch {
-    return emptyUsage()
+    return null
   }
 }
 
-function writeUsage(usage) {
+function sameStat(before, after) {
+  if (before === null || after === null) return before === after
+  return before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs
+}
+
+/** 把损坏的账本改名为 `<name>.corrupt-<ts>.json`，保留证据而不是覆盖掉。 */
+function quarantineUsage(reason) {
+  const target = usagePath()
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const backup = target.replace(/\.json$/i, `.corrupt-${stamp}.json`)
+  let moved = null
   try {
-    // Keep the ledger bounded: newest hours / days first, then trim.
-    const hourKeys = Object.keys(usage.hours).sort()
-    while (hourKeys.length > USAGE_HOURS) delete usage.hours[hourKeys.shift()]
-    const dayKeys = Object.keys(usage.days).sort()
-    while (dayKeys.length > USAGE_DAYS) delete usage.days[dayKeys.shift()]
-    usage.recent = usage.recent.slice(-USAGE_RECENT)
-    if (Array.isArray(usage.decisions)) usage.decisions = usage.decisions.slice(-DECISIONS_MAX)
-    fs.writeFileSync(usagePath(), JSON.stringify(usage), { mode: 0o600 })
-  } catch { /* accounting must never break a call */ }
+    fs.renameSync(target, backup)
+    moved = backup
+  } catch { /* 隔离失败（只读盘 / 权限）也要留下警告，不能让统计装没事 */ }
+  usageWarning = {
+    code: 'usage-ledger-corrupt',
+    reason: String(reason || 'unreadable'),
+    file: target,
+    backup: moved,
+    at: new Date().toISOString(),
+    message: moved
+      ? '用量账本损坏，旧文件已隔离，统计从这一刻重新开始。'
+      : '用量账本损坏，旧文件无法隔离（权限或只读盘），统计从这一刻重新开始。',
+  }
+  return moved
+}
+
+function readUsage() {
+  const target = usagePath()
+  let raw
+  try {
+    raw = fs.readFileSync(target, 'utf8')
+  } catch (err) {
+    // 文件不存在是正常状态；其它读错误不该把「读不到」伪装成「没有记录」，
+    // 但也不隔离（文件可能是好的，只是此刻读不了）。
+    if (err && err.code === 'ENOENT') return emptyUsage()
+    usageWarning = {
+      code: 'usage-ledger-unreadable',
+      reason: String((err && err.code) || err),
+      file: target,
+      backup: null,
+      at: new Date().toISOString(),
+      message: '用量账本此刻读不出来，统计可能暂时为空。',
+    }
+    return emptyUsage()
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (err) {
+    quarantineUsage(err && err.message ? err.message : 'invalid JSON')
+    return emptyUsage()
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    quarantineUsage('not a ledger object')
+    return emptyUsage()
+  }
+  return {
+    version: USAGE_VERSION,
+    hours: parsed.hours && typeof parsed.hours === 'object' ? parsed.hours : {},
+    days: parsed.days && typeof parsed.days === 'object' ? parsed.days : {},
+    recent: Array.isArray(parsed.recent) ? parsed.recent : [],
+    decisions: Array.isArray(parsed.decisions) ? parsed.decisions : [],
+  }
+}
+
+/** 账本有界：只留最近的桶与环形缓冲。 */
+function trimUsage(usage) {
+  const hourKeys = Object.keys(usage.hours).sort()
+  while (hourKeys.length > USAGE_HOURS) delete usage.hours[hourKeys.shift()]
+  const dayKeys = Object.keys(usage.days).sort()
+  while (dayKeys.length > USAGE_DAYS) delete usage.days[dayKeys.shift()]
+  usage.recent = usage.recent.slice(-USAGE_RECENT)
+  if (Array.isArray(usage.decisions)) usage.decisions = usage.decisions.slice(-DECISIONS_MAX)
+  return usage
+}
+
+/** 原子写：同目录 .tmp 写完后 rename 覆盖，进程崩溃不会留下半个账本。 */
+function writeUsage(usage) {
+  const target = usagePath()
+  const tmp = `${target}.${process.pid}-${randomUUID().slice(0, 8)}.tmp`
+  try {
+    trimUsage(usage)
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(tmp, JSON.stringify(usage), { mode: 0o600 })
+    fs.renameSync(tmp, target)
+  } catch {
+    try { fs.unlinkSync(tmp) } catch { /* tmp 不存在或删不掉都不影响调用 */ }
+  }
+}
+
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  } catch { /* 环境不支持就退化成忙等一次 */ }
+}
+
+/**
+ * 跨进程互斥：同目录 `.lock` 用 O_EXCL 创建。
+ * 拿不到就短暂重试；锁文件超过 10s 视为崩溃遗留物直接清掉；
+ * 超过 2s 仍未拿到则退化直写 —— 记账永远不许阻塞或打断一次调用。
+ */
+function withUsageLock(run) {
+  const lockFile = `${usagePath()}.lock`
+  const deadline = Date.now() + 2000
+  let fd = null
+  for (;;) {
+    try {
+      fd = fs.openSync(lockFile, 'wx', 0o600)
+      break
+    } catch (err) {
+      if (!err || err.code !== 'EEXIST') return run()
+      try {
+        const stat = fs.statSync(lockFile)
+        if (Date.now() - stat.mtimeMs > 10000) fs.unlinkSync(lockFile)
+      } catch { /* 锁刚被释放 */ }
+      if (Date.now() > deadline) return run()
+      sleepSync(2)
+    }
+  }
+  try {
+    return run()
+  } finally {
+    try { fs.closeSync(fd) } catch { /* 已经关掉了 */ }
+    try { fs.unlinkSync(lockFile) } catch { /* 已经删掉了 */ }
+  }
+}
+
+/**
+ * 读-改-写：在锁内重读 → 修改 → 写前再核对 inode / 大小 / mtime。
+ * 文件在读写之间被换掉就丢掉这一轮重来，避免把别人的更新覆盖掉。
+ */
+function mutateUsage(mutate) {
+  return withUsageLock(() => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const before = usageStat(usagePath())
+      const usage = readUsage()
+      mutate(usage)
+      trimUsage(usage)
+      const after = usageStat(usagePath())
+      if (attempt === 2 || sameStat(before, after)) {
+        writeUsage(usage)
+        return true
+      }
+    }
+    return false
+  })
 }
 
 function bumpBucket(target, event) {
@@ -261,30 +398,30 @@ function bumpBucket(target, event) {
  */
 function recordDecision(entry) {
   try {
-    const usage = readUsage()
-    if (!Array.isArray(usage.decisions)) usage.decisions = []
-    usage.decisions.push({
-      t: new Date(entry.at || Date.now()).toISOString(),
-      task: String(entry.task || '').slice(0, 120),
-      tier: entry.tier || '',
-      asked: entry.asked || 'auto',
-      source: entry.source || 'explicit',
-      choice: entry.choice || entry.tier || '',
-      confidence: Number.isFinite(entry.confidence) ? Number(entry.confidence) : undefined,
-      provider: entry.provider || '',
-      model: entry.model || '',
-      host: entry.host && entry.host.provider && entry.host.model
-        ? { provider: String(entry.host.provider), model: String(entry.host.model) }
-        : null,
-      skill: entry.skill || '',
-      ok: Boolean(entry.ok),
-      ms: Math.round(entry.ms || 0),
-      pt: entry.pt || 0,
-      ct: entry.ct || 0,
-      error: entry.error ? String(entry.error).slice(0, 160) : '',
+    mutateUsage((usage) => {
+      if (!Array.isArray(usage.decisions)) usage.decisions = []
+      usage.decisions.push({
+        t: new Date(entry.at || Date.now()).toISOString(),
+        task: String(entry.task || '').slice(0, 120),
+        tier: entry.tier || '',
+        asked: entry.asked || 'auto',
+        source: entry.source || 'explicit',
+        choice: entry.choice || entry.tier || '',
+        confidence: Number.isFinite(entry.confidence) ? Number(entry.confidence) : undefined,
+        provider: entry.provider || '',
+        model: entry.model || '',
+        host: entry.host && entry.host.provider && entry.host.model
+          ? { provider: String(entry.host.provider), model: String(entry.host.model) }
+          : null,
+        skill: entry.skill || '',
+        ok: Boolean(entry.ok),
+        ms: Math.round(entry.ms || 0),
+        pt: entry.pt || 0,
+        ct: entry.ct || 0,
+        error: entry.error ? String(entry.error).slice(0, 160) : '',
+      })
+      if (usage.decisions.length > DECISIONS_MAX) usage.decisions = usage.decisions.slice(-DECISIONS_MAX)
     })
-    if (usage.decisions.length > DECISIONS_MAX) usage.decisions = usage.decisions.slice(-DECISIONS_MAX)
-    writeUsage(usage)
   } catch { /* observability must never break a call */ }
 }
 
@@ -295,26 +432,26 @@ function recordUsage(event) {
     const pad = (n) => String(n).padStart(2, '0')
     const hourKey = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}`
     const dayKey = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
-    const usage = readUsage()
-    if (!usage.hours[hourKey]) usage.hours[hourKey] = {}
-    if (!usage.days[dayKey]) usage.days[dayKey] = {}
-    if (!usage.hours[hourKey][event.gateway]) usage.hours[hourKey][event.gateway] = emptyBucket()
-    if (!usage.days[dayKey][event.gateway]) usage.days[dayKey][event.gateway] = emptyBucket()
-    bumpBucket(usage.hours[hourKey][event.gateway], event)
-    bumpBucket(usage.days[dayKey][event.gateway], event)
-    usage.recent.push({
-      t: at.toISOString(),
-      g: event.gateway,
-      m: event.model || '',
-      tool: event.tool || '',
-      ok: Boolean(event.ok),
-      status: event.status || 0,
-      ms: Math.round(event.ms || 0),
-      pt: event.promptTokens || 0,
-      ct: event.completionTokens || 0,
-      error: event.error ? String(event.error).slice(0, 160) : '',
+    mutateUsage((usage) => {
+      if (!usage.hours[hourKey]) usage.hours[hourKey] = {}
+      if (!usage.days[dayKey]) usage.days[dayKey] = {}
+      if (!usage.hours[hourKey][event.gateway]) usage.hours[hourKey][event.gateway] = emptyBucket()
+      if (!usage.days[dayKey][event.gateway]) usage.days[dayKey][event.gateway] = emptyBucket()
+      bumpBucket(usage.hours[hourKey][event.gateway], event)
+      bumpBucket(usage.days[dayKey][event.gateway], event)
+      usage.recent.push({
+        t: at.toISOString(),
+        g: event.gateway,
+        m: event.model || '',
+        tool: event.tool || '',
+        ok: Boolean(event.ok),
+        status: event.status || 0,
+        ms: Math.round(event.ms || 0),
+        pt: event.promptTokens || 0,
+        ct: event.completionTokens || 0,
+        error: event.error ? String(event.error).slice(0, 160) : '',
+      })
     })
-    writeUsage(usage)
   } catch { /* accounting must never break a call */ }
 }
 
@@ -410,6 +547,8 @@ function usageReport(hours = 24) {
     grain: dayGrain ? 'day' : 'hour',
     peak: worst,
     file: usagePath(),
+    // 账本损坏 / 读不出来时的可见信号；正常为 null，旧客户端忽略即可。
+    warning: usageWarning,
     buckets,
     totals,
     today: todayTotals,
