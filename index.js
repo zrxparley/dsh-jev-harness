@@ -619,13 +619,31 @@ function sanitizeProbabilities(raw) {
   return Object.keys(kept).length ? kept : undefined
 }
 
+/**
+ * #8: tokens used by ONE session on the current local day (prompt + completion).
+ * Sums that session's decision rows whose timestamp falls on today (local day),
+ * so the daily budget gate can refuse before spending more. Unknown-session
+ * callers are budgeted under the 'unknown' bucket, never silently unlimited.
+ */
+function dailyTokensUsed(sessionId) {
+  const day = localDayKey(new Date())
+  const usage = readUsage()
+  let total = 0
+  for (const d of usage.decisions || []) {
+    if (!d || d.session !== sessionId) continue
+    if (String(d.t || '').slice(0, 10) !== day) continue
+    total += (Number(d.pt) || 0) + (Number(d.ct) || 0)
+  }
+  return total
+}
+
 function recordDecision(entry) {
   try {
     mutateUsage((usage) => {
       if (!Array.isArray(usage.decisions)) usage.decisions = []
       usage.decisions.push({
         t: new Date(entry.at || Date.now()).toISOString(),
-        task: String(entry.task || '').slice(0, 120),
+        task: redactSecrets(String(entry.task || '')).slice(0, 120),
         // #41: every decision carries its session so the ledger can be read
         // per-session. 'unknown' = caller could not supply one (e.g. L1 tools);
         // 'legacy' = pre-partition records backfilled on read.
@@ -2282,6 +2300,18 @@ export function apply(ctx, config = {}) {
         if (!cfg.enabled) return result({ note: DISABLED_NOTE })
         const task = String(args.task || '').trim()
         if (!task) return result({ note: 'task must be a non-empty string' })
+        // #8: per-session daily token budget. Refuse BEFORE spending, with a clear
+        // note — never silently keep charging past the cap. 0 = unlimited.
+        if (cfg.budgetDailyTokens > 0) {
+          const budgetSession = String((exec && (exec.sessionId || (exec.session && exec.session.id))) || 'unknown')
+          const usedToday = dailyTokensUsed(budgetSession)
+          if (usedToday >= cfg.budgetDailyTokens) {
+            return result({
+              ok: false,
+              note: `超出每日 token 预算上限：本会话今日已用 ${usedToday} tokens（上限 ${cfg.budgetDailyTokens}）。请明天再来，或在面板调高每日预算。`,
+            })
+          }
+        }
         const askedTier = args.tier === 'decision' || args.tier === 'execution' ? args.tier : 'auto'
         let tier = askedTier
         let note = ''
@@ -2981,6 +3011,7 @@ export function apply(ctx, config = {}) {
       lowConfidenceThreshold: live.lowConfidenceThreshold,
       // #2: history config surfaced for the panel's auto-context switch + turn cap.
       history: { auto: live.history.auto, turns: live.history.turns, maxChars: live.history.maxChars },
+      budgetDailyTokens: live.budgetDailyTokens,
       // #39: judge timeout is separate from the 120s generation timeout.
       judgeTimeoutMs: live.judgeTimeoutMs,
       timeoutMs: live.timeoutMs,

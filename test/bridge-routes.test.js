@@ -34,6 +34,7 @@ test('status / save / toggle / stats / test 五条路由都通，且写盘真的
       [
         '/api/jev-harness/dsh/catalog',
         '/api/jev-harness/dsh/models',
+        '/api/jev-harness/export',
         '/api/jev-harness/save',
         '/api/jev-harness/selfcheck',
         '/api/jev-harness/skills/refresh',
