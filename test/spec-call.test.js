@@ -60,13 +60,22 @@ test('#34 T17: 执行层超时按 timeoutExecution 走，500ms 内返回而不�
   })
   const startedAt = Date.now()
   try {
-    const { tools } = await boot({ home })
+    const { tools, routes } = await boot({ home })
     const out = await tools.get('harness_call').execute({ task: '整理成列表', tier: 'execution', skill: 'off' }, {})
     const elapsed = Date.now() - startedAt
     assert.ok(elapsed < 500, `必须在 500ms 内返回，实际 ${elapsed}ms`)
     assert.equal(out.ok, false, '两个网关都超时时应失败')
     assert.equal(aborted, 2, '主备各被 abort 一次（说明都用了短超时）')
     assert.ok(!/non-JSON|undefined/.test(String(out.note)), `note 应是超时原因：${out.note}`)
+
+    // #34 T17 的最后一格：超时不是「返回了就算」，账本里必须真的记成失败。
+    const stats = (await callRoute(routes, STATS, { url: `${STATS}?hours=24` })).body
+    const fails = Object.values(stats.totals).reduce((sum, entry) => sum + entry.fail, 0)
+    assert.equal(fails, 2, `超时必须记失败（主备各 1 条），实际 ${fails}`)
+    assert.equal(stats.recent.length, 2, '两条超时都要出现在 recent 里')
+    assert.ok(stats.recent.every((row) => row.ok === false), 'recent 行必须是失败')
+    assert.ok(stats.recent.every((row) => row.status === 0), '没拿到响应：status 记 0')
+    assert.ok(stats.recent.every((row) => String(row.error).length > 0), '失败记录要带原因原文')
   } finally {
     stub.restore(); removeHome(home)
   }
