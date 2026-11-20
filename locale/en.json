@@ -257,5 +257,14 @@
   "jev.k203": "provider",
   "jev.k204": "model",
   "jev.k205": "Recent calls",
-  "jev.t60": "In this window: {p0} calls — JEV {p1} · Kimi {p2} · Flash {p3}"
+  "jev.t60": "In this window: {p0} calls — JEV {p1} · Kimi {p2} · Flash {p3}",
+  "jev.h001": "Auto conversation history",
+  "jev.h002": "On — mounts the last few turns (bounded, never logged)",
+  "jev.h003": "Off — only your task/context",
+  "jev.h004": "Turn cap",
+  "jev.h005": "Save turns",
+  "jev.h006": "Auto-history ON: mounts the last few turns (bounded, never logged).",
+  "jev.h007": "Auto-history OFF: only your task/context.",
+  "jev.h008": "Turn cap must be an integer between 1 and 50, e.g. 6.",
+  "jev.h009": "Saved: mounts the last {n} turns. Takes effect on the next call."
 }
