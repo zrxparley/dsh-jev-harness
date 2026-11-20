@@ -96,7 +96,7 @@ export function loadClient(reactPkgs, { fetch = globalThis.fetch, boot, clientPa
  * 注意 register(def, comp)：第二个参数才是组件本体。只取 def 会让渲染报
  * "Element type is invalid" —— issue #1 专门点名了这个坑。
  */
-export function applyClient(loaded, { messages = {} } = {}) {
+export function applyClient(loaded, { messages = {}, services = {} } = {}) {
   const registrations = []
   const injections = []
   const ctx = {
@@ -112,6 +112,7 @@ export function applyClient(loaded, { messages = {} } = {}) {
       },
     },
     locale: { bind: () => (key) => messages[key] || key },
+    get(name) { return services[name] },
   }
   const dispose = loaded.exports.apply(ctx)
   return { ctx, registrations, injections, dispose }

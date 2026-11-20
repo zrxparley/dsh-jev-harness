@@ -57,7 +57,6 @@ test('主面板渲染出可见内容：总开关 / 流量看板 / 技能库 / 39
     '测试连通',
     '决策层',
     '执行层',
-    '刷新技能目录',
   ]
   const missing = mustContain.filter((needle) => !text.includes(needle))
   assert.deepEqual(missing, [], `面板缺少文案：${missing.join(' / ')}`)
@@ -88,9 +87,10 @@ test('插件管理里的配置席位两个视图都能渲染', { skip }, () => {
   assert.ok(seat, 'plugins.bundle.config 未注册')
 
   const summary = render(reactPkgs, seat.comp, { view: 'summary' })
-  assert.ok(visibleText(summary).includes('JEV 判定'), '摘要视图缺少一句话说明')
+  assert.ok(visibleText(summary).includes('JEV 分级调度'), '摘要视图缺少状态说明')
+  assert.ok(visibleText(summary).includes('打开 JEV 面板'), '摘要视图缺少唯一入口按钮')
 
   const page = render(reactPkgs, seat.comp, { view: 'page' })
-  assert.ok(page.length > 500, `配置页太短：${page.length}`)
-  assert.ok(visibleText(page).includes('Base URL'), '配置页缺少 Base URL 字段')
+  assert.ok(page.length > 200, `配置页太短：${page.length}`)
+  assert.equal(visibleText(page).includes('Base URL'), false, '入口卡不许内嵌完整表单')
 })

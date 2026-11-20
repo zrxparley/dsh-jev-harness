@@ -46,16 +46,14 @@ const EXPECTED = [
   { name: 'sidebar.panellist', id: 'jev-harness-workbench' },
   { name: 'conversation.input.left', id: 'jev-harness' },
   { name: 'plugins.bundle.config', key: '@local/jev-harness' },
-  { name: 'plugins.row.config', key: '@local/jev-harness#jev-harness' },
   { name: 'plugins.bundle.config', key: '@zrxparley/dsh-jev-harness' },
-  { name: 'plugins.row.config', key: '@zrxparley/dsh-jev-harness#jev-harness' },
 ]
 
-test('注册 7 个 slot，且每个都取到了第二个参数（组件）', async () => {
+test('注册 5 个 slot（入口收敛后不再注册 row.config）', async () => {
   const { registrations, stub } = bootClient({ state: 'off' })
   await nextTick()
 
-  assert.equal(registrations.length, 7, `slot 注册数应为 7，实际 ${registrations.length}`)
+  assert.equal(registrations.length, 5, `入口收敛后 slot 注册数应为 5（main/sidebar/composer + 两个 bundle 卡），实际 ${registrations.length}`)
   for (const [index, expected] of EXPECTED.entries()) {
     const actual = registrations[index].def
     assert.equal(actual.name, expected.name, `第 ${index + 1} 个注册的 slot 名不对`)
@@ -86,9 +84,7 @@ test('inject 覆盖面板、侧边栏、输入区与两个插件配置席位', a
     'conversation.input.left',
     'conversation.input.model',
     'plugins.bundle.config',
-    'plugins.row.config',
     'plugins.bundle.config',
-    'plugins.row.config',
   ])
   stub.restore()
 })
@@ -98,8 +94,8 @@ test('开关打开时抢占模型选择器席位，关闭时保持释放', async
   await nextTick()
   await nextTick()
   await nextTick()
-  assert.equal(on.registrations.length, 8, '开关打开时应多注册 conversation.input.model')
-  const seat = on.registrations[7]
+  assert.equal(on.registrations.length, 6, '开关打开时应多注册 conversation.input.model')
+  const seat = on.registrations[5]
   assert.equal(seat.def.name, 'conversation.input.model')
   assert.equal(seat.def.order, 0)
   assert.equal(typeof seat.comp, 'function')
@@ -109,7 +105,7 @@ test('开关打开时抢占模型选择器席位，关闭时保持释放', async
   const off = bootClient({ state: 'off' })
   await nextTick()
   await nextTick()
-  assert.equal(off.registrations.length, 7, '开关关闭时不该占模型选择器席位')
+  assert.equal(off.registrations.length, 5, '开关关闭时不该占模型选择器席位')
   off.stub.restore()
 })
 
@@ -119,7 +115,7 @@ test('setup / degraded / unknown 三态不抢占模型选择器席位', async ()
     await nextTick()
     await nextTick()
     await nextTick()
-    assert.equal(booted.registrations.length, 7, `${state} 下不应注册 conversation.input.model`)
+    assert.equal(booted.registrations.length, 5, `${state} 下不应注册 conversation.input.model`)
     assert.equal(booted.registrations.some((entry) => entry.def.name === 'conversation.input.model'), false)
     booted.stub.restore()
   }
