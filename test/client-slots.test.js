@@ -27,10 +27,12 @@ function reactPkgs() {
   return { react: FALLBACK_REACT, server: null, jsx: {} }
 }
 
-function bootClient({ enabled = false } = {}) {
+function bootClient({ state = 'off' } = {}) {
   const stub = stubFetch((url) => {
     if (url === '/api/jev-harness/token') return jsonResponse({ ok: true, token: 'a'.repeat(64) })
-    if (url === '/api/jev-harness/status') return jsonResponse({ ok: true, enabled, gateways: {}, skills: {} })
+    if (url === '/api/jev-harness/status') {
+      return jsonResponse({ ok: true, enabled: state !== 'off', state, gateways: {}, skills: {} })
+    }
     return undefined
   })
   const loaded = loadClient(reactPkgs(), { fetch: globalThis.fetch })
@@ -49,7 +51,7 @@ const EXPECTED = [
 ]
 
 test('注册 7 个 slot，且每个都取到了第二个参数（组件）', async () => {
-  const { registrations, stub } = bootClient({ enabled: false })
+  const { registrations, stub } = bootClient({ state: 'off' })
   await nextTick()
 
   assert.equal(registrations.length, 7, `slot 注册数应为 7，实际 ${registrations.length}`)
@@ -75,7 +77,7 @@ test('注册 7 个 slot，且每个都取到了第二个参数（组件）', asy
 })
 
 test('inject 覆盖面板、侧边栏、输入区与两个插件配置席位', async () => {
-  const { injections, stub } = bootClient({ enabled: false })
+  const { injections, stub } = bootClient({ state: 'off' })
   await nextTick()
   assert.deepEqual(injections, [
     'main',
@@ -91,7 +93,7 @@ test('inject 覆盖面板、侧边栏、输入区与两个插件配置席位', a
 })
 
 test('开关打开时抢占模型选择器席位，关闭时保持释放', async () => {
-  const on = bootClient({ enabled: true })
+  const on = bootClient({ state: 'ready' })
   await nextTick()
   await nextTick()
   await nextTick()
@@ -103,15 +105,42 @@ test('开关打开时抢占模型选择器席位，关闭时保持释放', async
   assert.deepEqual(on.stub.urls(), ['/api/jev-harness/token', '/api/jev-harness/status'], '先取 token，再问一次状态')
   on.stub.restore()
 
-  const off = bootClient({ enabled: false })
+  const off = bootClient({ state: 'off' })
   await nextTick()
   await nextTick()
   assert.equal(off.registrations.length, 7, '开关关闭时不该占模型选择器席位')
   off.stub.restore()
 })
 
+test('setup / degraded / unknown 三态不抢占模型选择器席位', async () => {
+  for (const state of ['setup', 'degraded', 'unknown']) {
+    const booted = bootClient({ state })
+    await nextTick()
+    await nextTick()
+    await nextTick()
+    assert.equal(booted.registrations.length, 7, `${state} 下不应注册 conversation.input.model`)
+    assert.equal(booted.registrations.some((entry) => entry.def.name === 'conversation.input.model'), false)
+    booted.stub.restore()
+  }
+})
+
+test('状态读取失败时席位保持释放（不因 enabled 默认值占座）', async () => {
+  const stub = stubFetch((url) => {
+    if (url === '/api/jev-harness/token') return jsonResponse({ ok: true, token: 'a'.repeat(64) })
+    if (url === '/api/jev-harness/status') throw new Error('boom')
+    return undefined
+  })
+  const loaded = loadClient(reactPkgs(), { fetch: globalThis.fetch })
+  const applied = applyClient(loaded, { messages: { 'jev.panel': 'JEV 分级调度' } })
+  await nextTick()
+  await nextTick()
+  await nextTick()
+  assert.equal(applied.registrations.some((entry) => entry.def.name === 'conversation.input.model'), false, '读不到状态时必须释放席位')
+  stub.restore()
+})
+
 test('apply 返回的销毁函数可调用且不抛错', async () => {
-  const { dispose, stub } = bootClient({ enabled: false })
+  const { dispose, stub } = bootClient({ state: 'off' })
   await nextTick()
   assert.equal(typeof dispose, 'function')
   assert.doesNotThrow(() => dispose())
