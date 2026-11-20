@@ -1,6 +1,7 @@
 # ADR 0006: 账本按会话分区（session-scoped ledger）
 
-- Status: **Accepted — 已采纳，尚未实现（NOT yet implemented）**
+- Status: **Accepted — 已实现（#41，commit `7466794`）**
+- 更新（2026-11-19）：本条最初标记为「已采纳未实现」；#41 已落地——`recordUsage`/`recordDecision` 每条带 `session`，老文件读取时回填 `legacy`，`/stats?session=` 返回该会话判定指标，每会话保留最近 50 条（`DECISIONS_PER_SESSION`，`trimUsage` 统一裁剪）。下方「Context/Alternatives」保留了当时未实现的分析与选择。
 - Date: 2026-11-19
 - Issue: #40（与 #37 的 session 缓存、#39 的审计需求相关）
 - 证据行号以 `index.js` sha256 `47b3f0864ad4772fdef78e646e561a65d7911a4031d107789c1a1aa64f066ce9`（行号采集于 commit `0e96932`）为准。
