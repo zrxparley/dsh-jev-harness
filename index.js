@@ -2483,6 +2483,9 @@ export function apply(ctx, config = {}) {
     const repo = cfg2.skills.repo || SKILLS_URL_REPO
     const ref = cfg2.skills.ref || 'main'
     const url = `https://codeload.github.com/${repo}/tar.gz/refs/heads/${ref}`
+    // #30：整个 refresh 共用一份总预算，第二个请求（commit）不许无限挂起。
+    const budgetMs = Math.max(100, Number(cfg2.timeoutMs) || 120000)
+    const deadline = Date.now() + budgetMs
     const link = combineSignal(cfg2.timeoutMs, undefined)
     let buf
     try {
@@ -2554,15 +2557,23 @@ export function apply(ctx, config = {}) {
     }
 
     let commit = ''
-    try {
-      const res = await fetch(`https://api.github.com/repos/${repo}/commits/${ref}`, {
-        headers: { accept: 'application/vnd.github+json' },
-      })
-      if (res.ok) {
-        const body = await res.json()
-        commit = String(body?.sha || '').slice(0, 7)
+    const remaining = deadline - Date.now()
+    if (remaining > 0) {
+      // commit 只是展示信息：拿不到就记 null，不让整次刷新挂住或失败（#30）。
+      const commitLink = combineSignal(remaining, undefined)
+      try {
+        const res = await fetch(`https://api.github.com/repos/${repo}/commits/${ref}`, {
+          headers: { accept: 'application/vnd.github+json' },
+          signal: commitLink.signal,
+        })
+        if (res.ok) {
+          const body = await res.json()
+          commit = String(body?.sha || '').slice(0, 7)
+        }
+      } catch { /* informational only */ } finally {
+        commitLink.dispose()
       }
-    } catch { /* commit id is informational */ }
+    }
 
     const snapshot = {
       repo,
@@ -2587,7 +2598,8 @@ export function apply(ctx, config = {}) {
     const before = new Set(previousIds)
     return {
       repo,
-      commit: snapshot.commit,
+      // 没取到 commit 时返回 null，而不是拿 ref 冒充一个 sha（#30）。
+      commit: commit || null,
       count: skills.length,
       added: skills.filter(skill => !before.has(skill.id)).length,
       removed: previousIds.filter(id => !now.has(id)).length,
