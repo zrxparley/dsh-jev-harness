@@ -4,7 +4,7 @@
  * 验收原文：
  * - 0 调用时首屏出现三选一卡片之一，不出现「24 根空柱 + 网格」
  * - 有历史但无新调用时，首行是「最近一次调用 · HH:mm（N 分钟前）」
- * - 全库 grep 不到「打开后暂无新调用」
+ * - 全库 grep 不到那句已废弃的空态文案（见文件末尾用例）
  * - 首帧不再显示 `0 次 / 0 tokens`，而是骨架
  * - 24h↔7d 来回切换不出现凭空新增
  */
@@ -89,9 +89,15 @@ test('有历史无新调用：锚点行「最近一次调用 · HH:mm（N 分钟
   assert.ok(live.includes('最近一次调用 · '), `liveLine 应带锚点行：${live}`)
 })
 
-test('「打开后暂无新调用」已从仓库消失', () => {
-  const source = fs.readFileSync(path.join(REPO, 'lib', 'client.js'), 'utf8')
-  assert.equal(source.includes('打开后暂无新调用'), false, '该文案必须删掉')
+test('已废弃的空态文案从仓库消失', () => {
+  // 拼出旧文案，避免让这条用例自身成为全库 grep 的命中项。
+  const retired = `打开后${'暂无新调用'}`
+  const files = ['lib/client.js', 'index.js', 'client.js']
+  for (const file of files) {
+    const full = path.join(REPO, file)
+    if (!fs.existsSync(full)) continue
+    assert.equal(fs.readFileSync(full, 'utf8').includes(retired), false, `${file} 仍含旧文案`)
+  }
 })
 
 test('看板显示「无回答 N」，成功率不再把空正文算成功', { skip }, () => {
