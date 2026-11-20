@@ -28,6 +28,14 @@ import zlib from 'node:zlib'
 import { SKILLS, SKILL_BY_ID, SKILLS_SNAPSHOT } from './skills.js'
 import { TIER_CRITERIA, TIER_INSTRUCTIONS } from './criteria.js'
 
+const PACKAGE_VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version || 'unknown'
+  } catch {
+    return 'unknown'
+  }
+})()
+
 export const name = 'jev-harness'
 export const inject = ['tools']
 
@@ -1941,6 +1949,7 @@ export function apply(ctx, config = {}) {
 
     return {
       ok: true,
+      version: PACKAGE_VERSION,
       enabled: live.enabled,
       state,
       file: storePath(),

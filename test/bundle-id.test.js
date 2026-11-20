@@ -13,6 +13,7 @@ import assert from 'node:assert/strict'
 import { loadClient } from './helpers/client.js'
 
 const FALLBACK_REACT = {
+  Component: class { constructor(props) { this.props = props || {} } setState() {} },
   createElement() { return null },
   useState() { return [undefined, () => {}] },
   useEffect() {},

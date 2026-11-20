@@ -14,6 +14,7 @@ import { applyClient, findSlot, loadClient, resolveReact } from './helpers/clien
 import { jsonResponse, nextTick, stubFetch } from './helpers/harness.js'
 
 const FALLBACK_REACT = {
+  Component: class { constructor(props) { this.props = props || {} } setState() {} },
   createElement() { return null },
   useState() { return [undefined, () => {}] },
   useEffect() {},
