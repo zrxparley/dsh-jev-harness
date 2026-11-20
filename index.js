@@ -1134,8 +1134,16 @@ async function chat(route, messages, opts, cfg, exec) {
   const reasoning = message.reasoning_content || message.reasoning
   const usage = body?.usage || {}
   const details = usage.completion_tokens_details || {}
+  const finalText = typeof text === 'string' ? text : (text == null ? '' : JSON.stringify(text))
+  const emptyNote = emptyAnswerNote({
+    text: finalText,
+    completionTokens: Number(usage.completion_tokens) || 0,
+    reasoningTokens: Number(details.reasoning_tokens) || undefined,
+    reasoningChars: typeof reasoning === 'string' ? reasoning.length : 0,
+  })
   return {
-    text: typeof text === 'string' ? text : (text == null ? '' : JSON.stringify(text)),
+    text: finalText,
+    emptyNote,
     promptTokens: Number(usage.prompt_tokens) || 0,
     completionTokens: Number(usage.completion_tokens) || 0,
     totalTokens: Number(usage.total_tokens) || 0,
@@ -1150,6 +1158,25 @@ async function chat(route, messages, opts, cfg, exec) {
  * keeps no kimi/dsf credentials at all — the Host already holds the provider
  * key — and whatever the user configured in DSH Models is what actually runs.
  */
+/**
+ * 空正文提示（#31）：两条路径（chat / dshChat）共用一份，数字口径也共用。
+ * - reasoning 数绝不大于 completion 总数；
+ * - 拿不到网关的 reasoning_tokens 时用字数估算，并明确写「about」；
+ * - retry 建议 max(600, 2×观测值)，给出具体数字。
+ */
+function emptyAnswerNote(answer) {
+  const text = String((answer && answer.text) || '').trim()
+  if (text) return ''
+  const completion = Math.max(0, Number(answer && answer.completionTokens) || 0)
+  if (completion <= 0) return ''
+  const reported = Number(answer && answer.reasoningTokens)
+  const estimated = Math.max(0, Math.ceil((Number(answer && answer.reasoningChars) || 0) / 3))
+  const exact = Number.isFinite(reported) && reported > 0
+  const used = Math.min(completion, exact ? reported : estimated)
+  const retry = Math.max(600, used * 2)
+  return ` — empty content: the model spent ${exact ? '' : 'about '}${used} of ${completion} completion tokens on reasoning and never reached an answer; retry with maxTokens ${retry}`
+}
+
 async function dshChat(llm, binding, opts, cfg, exec) {
   if (!llm || typeof llm.prepareCall !== 'function') {
     recordUsage({
@@ -1212,6 +1239,8 @@ async function dshChat(llm, binding, opts, cfg, exec) {
       completionTokens: outputTokens,
       totalTokens: inputTokens + outputTokens,
       reasoningTokens: trimmed ? reasoningTokens : (outputTokens || reasoningTokens),
+      reasoningChars,
+      emptyNote: emptyAnswerNote({ text: trimmed, completionTokens: outputTokens, reasoningChars }),
     }
   } catch (err) {
     recordUsage({
@@ -1932,9 +1961,7 @@ export function apply(ctx, config = {}) {
               { role: 'system', content: systemText },
               { role: 'user', content: userText },
             ], { provider: selected, tool: 'call', temperature: args.temperature, maxTokens: args.maxTokens }, cfg, exec)
-          const emptyHint = !answer.text && answer.completionTokens > 0
-            ? ` — empty content: the model spent ${answer.reasoningTokens || answer.completionTokens} of ${answer.completionTokens} completion tokens on reasoning and never reached an answer; retry with maxTokens around ${Math.max(600, (answer.reasoningTokens || answer.completionTokens) * 2)}`
-            : ''
+          const emptyHint = answer.emptyNote || ''
           const followed = useDsh ? await dshFollowModel(binding) : false
           recordDecision({
             session: String((exec && (exec.sessionId || (exec.session && exec.session.id))) || 'unknown'),
@@ -2068,7 +2095,7 @@ export function apply(ctx, config = {}) {
             model: servedModel,
             text: answer.text,
             note: (note || `reviewed ${primary}-tier draft with ${reviewer}`) + (useDsh ? ' · via DSH gateway' : ' · via plugin gateway')
-              + (followed ? ` · DSH 选择器已切到 ${binding.model}` : ''),
+              + (followed ? ` · DSH 选择器已切到 ${binding.model}` : '') + (answer.emptyNote || ''),
             ...answer,
           })
         } catch (err) {
@@ -2644,7 +2671,7 @@ export function apply(ctx, config = {}) {
     const snapshot = {
       repo,
       ref,
-      commit: commit || ref,
+      commit: commit || null,
       takenAt: new Date().toISOString(),
       count: skills.length,
     }

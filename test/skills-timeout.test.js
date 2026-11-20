@@ -52,6 +52,8 @@ test('commit 请求挂住：刷新在总预算内完成，commit 降级为 null'
     assert.equal(refreshed.body.ok, true)
     assert.equal(refreshed.body.count, 20, '目录本身要刷新成功')
     assert.equal(refreshed.body.commit, null, '取不到 commit 时必须是 null，不是 ref 冒充')
+    const catalog = JSON.parse(fs.readFileSync(path.join(home, 'jev-harness-skills', 'catalog.json'), 'utf8'))
+    assert.equal(catalog.snapshot.commit, null, '快照里也不许把 ref 当 sha 存')
     assert.ok(elapsed < 1500, `整个刷新应有总预算，实际 ${elapsed}ms`)
   } finally {
     stub.restore()
