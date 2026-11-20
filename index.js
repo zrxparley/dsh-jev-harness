@@ -840,6 +840,9 @@ function usageReport(hours = 24) {
  * addressed to the calling agent: it must not retry the harness, it must use
  * DSH's own configured model gateway instead.
  */
+// #20: bridge 403 的面向用户文案。抽成常量避免 9 处重复，并留稳定 code 便于将来翻译。
+const LOCAL_ONLY = { ok: false, error: '仅限本机请求', code: 'local-only' }
+
 const DISABLED_NOTE = 'harness switch is OFF (JEV 分级调度已关闭)：不要使用本插件路由，改用 DSH 自身配置的模型网关完成任务。需要恢复时在 JEV 设置面板打开总开关。'
 
 const DECISION_WORDS = [
@@ -3021,7 +3024,7 @@ export function apply(ctx, config = {}) {
       kind: 'exact',
       path: '/api/jev-harness/token',
       handler: async (req, res) => {
-        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         // Bootstrap 是整条链路唯一的软点：拿得到它的进程也就拿得到 token。
         // 见 BRIDGE_TOKEN 注释里的诚实边界。
@@ -3032,7 +3035,7 @@ export function apply(ctx, config = {}) {
       kind: 'exact',
       path: '/api/jev-harness/status',
       handler: async (req, res) => {
-        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
         if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         writeJson(res, 200, await statusPayload())
@@ -3042,7 +3045,7 @@ export function apply(ctx, config = {}) {
       kind: 'exact',
       path: '/api/jev-harness/save',
       handler: async (req, res) => {
-        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
         if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         const body = await readJsonBody(req)
@@ -3123,7 +3126,7 @@ export function apply(ctx, config = {}) {
       kind: 'exact',
       path: '/api/jev-harness/toggle',
       handler: async (req, res) => {
-        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
         if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         const body = await readJsonBody(req)
@@ -3143,7 +3146,7 @@ export function apply(ctx, config = {}) {
       kind: 'exact',
       path: '/api/jev-harness/skills/refresh',
       handler: async (req, res) => {
-        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
         if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         refresh()
@@ -3159,7 +3162,7 @@ export function apply(ctx, config = {}) {
       kind: 'exact',
       path: '/api/jev-harness/stats',
       handler: async (req, res) => {
-        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
         if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         const params = new URL(req.url || '/api/jev-harness/stats', 'http://127.0.0.1').searchParams
@@ -3216,7 +3219,7 @@ export function apply(ctx, config = {}) {
       kind: 'exact',
       path: '/api/jev-harness/dsh/catalog',
       handler: async (req, res) => {
-        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
         const catalog = dshLlm() === null ? { ok: false, providers: [] } : await dshCatalog()
         const resolved = dshLlm() === null
@@ -3229,7 +3232,7 @@ export function apply(ctx, config = {}) {
       kind: 'exact',
       path: '/api/jev-harness/dsh/models',
       handler: async (req, res) => {
-        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
         if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         const url = new URL(req.url || '/', 'http://127.0.0.1')
@@ -3253,7 +3256,7 @@ export function apply(ctx, config = {}) {
       kind: 'exact',
       path: '/api/jev-harness/test',
       handler: async (req, res) => {
-        if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
+        if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
         if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         refresh()

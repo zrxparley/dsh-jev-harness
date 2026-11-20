@@ -58,7 +58,13 @@ export function requireReactOrSkip() {
  * 沙箱只给 window.__ModuleLoader__ / console / fetch / 定时器；
  * fetch 必须是测试已装好的 stub，否则会走真网络。
  */
-export function loadClient(reactPkgs, { fetch = globalThis.fetch, boot, clientPath = CLIENT } = {}) {
+// #20: the table the module reads when no locale is bound yet (pure-function
+// calls and load-time constants). Defaults to zh.json; pass en.json for English.
+const DEFAULT_LOCALE_TABLE = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(REPO, 'locale', 'zh.json'), 'utf8')) } catch { return {} }
+})()
+
+export function loadClient(reactPkgs, { fetch = globalThis.fetch, boot, clientPath = CLIENT, defaultLocale } = {}) {
   const source = fs.readFileSync(clientPath, 'utf8')
   const captured = { id: null, exports: null }
   const fakeRequire = (name) => {
@@ -69,6 +75,7 @@ export function loadClient(reactPkgs, { fetch = globalThis.fetch, boot, clientPa
   }
   const sandbox = {
     window: {
+      __JEV_DEFAULT_LOCALE__: defaultLocale || DEFAULT_LOCALE_TABLE,
       ...(boot === undefined ? {} : { __DSH_BOOT__: boot }),
       __ModuleLoader__: {
         load({ id, factory }) {
@@ -96,7 +103,14 @@ export function loadClient(reactPkgs, { fetch = globalThis.fetch, boot, clientPa
  * 注意 register(def, comp)：第二个参数才是组件本体。只取 def 会让渲染报
  * "Element type is invalid" —— issue #1 专门点名了这个坑。
  */
-export function applyClient(loaded, { messages = {}, services = {} } = {}) {
+// #20: default the fake locale to the real zh.json so existing Chinese
+// assertions keep passing once UI strings move to T('key', enFallback).
+// Tests for the English locale pass locale/en.json as `messages` instead.
+const DEFAULT_MESSAGES = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(REPO, 'locale', 'zh.json'), 'utf8')) } catch { return {} }
+})()
+
+export function applyClient(loaded, { messages = DEFAULT_MESSAGES, services = {} } = {}) {
   const registrations = []
   const injections = []
   const ctx = {
