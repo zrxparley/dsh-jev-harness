@@ -34,6 +34,7 @@ test('未配置网关：发一条指令也留下「未发出」记录', async ()
     assert.equal(totals.reduce((sum, entry) => sum + entry.notSent, 0), 1, '未发出的调用要有一条记录')
     assert.equal(stats.recent.length, 1)
     assert.equal(stats.recent[0].sent, false)
+    assert.equal(stats.recent[0].answered, false, '没发出去就不算回答')
     assert.equal(stats.recent[0].kind, 'not-sent')
     assert.match(stats.recent[0].error, /未发出/)
     assert.equal(stats.recent[0].ms, 0)
@@ -99,7 +100,7 @@ test('平均耗时排除 probe：分母也只算真正回答的调用', async ()
     version: 1,
     hours: {
       [key]: {
-        kimi: { calls: 2, ok: 2, fail: 0, promptTokens: 1, completionTokens: 1, ms: 1000, probeCalls: 1, probeMs: 5000, answered: 2, unanswered: 0, notSent: 0 },
+        kimi: { calls: 3, ok: 2, fail: 1, promptTokens: 1, completionTokens: 1, ms: 1000, probeCalls: 1, probeMs: 5000, answered: 2, unanswered: 0, notSent: 1 },
       },
     },
     days: {},
@@ -111,7 +112,8 @@ test('平均耗时排除 probe：分母也只算真正回答的调用', async ()
     const { routes } = await boot({ home })
     const stats = (await callRoute(routes, STATS, { url: `${STATS}?hours=24` })).body
     assert.equal(stats.totals.kimi.probeCalls, 1)
-    assert.equal(stats.totals.kimi.avgMs, 1000, 'avgMs 必须是 1000/1，而不是 (1000+5000)/2')
+    assert.equal(stats.totals.kimi.notSent, 1)
+    assert.equal(stats.totals.kimi.avgMs, 1000, 'avgMs 分母要排除 probe 与未发出：1000/(3-1-1)')
   } finally {
     stub.restore()
     removeHome(home)

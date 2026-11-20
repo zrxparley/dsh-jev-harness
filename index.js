@@ -523,7 +523,7 @@ function recordUsage(event) {
         ok: Boolean(event.ok),
         // 看板据此区分「未发出 / 失败 / 无回答 / 成功」（#14）。
         sent: event.sent !== false,
-        answered: event.answered !== false,
+        answered: event.sent === false ? false : event.answered !== false,
         kind: event.kind || (event.sent === false ? 'not-sent' : event.ok ? (event.answered === false ? 'no-answer' : 'ok') : 'fail'),
         status: event.status || 0,
         ms: Math.round(event.ms || 0),
@@ -617,7 +617,8 @@ function usageReport(hours = 24) {
       probeCalls: total.probeCalls,
       // 平均耗时排除探测：分母是「真正回答过的调用」，分子不含 probe 的 ms。
       avgMs: (() => {
-        const answeredCalls = total.calls - total.probeCalls
+        // 分母排除探测与未发出的调用：它们没有回答耗时，混进来会稀释均值（#14）。
+        const answeredCalls = total.calls - total.probeCalls - total.notSent
         return answeredCalls > 0 ? Math.round(total.ms / answeredCalls) : 0
       })(),
     }

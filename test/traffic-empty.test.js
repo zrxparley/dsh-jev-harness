@@ -94,6 +94,33 @@ test('「打开后暂无新调用」已从仓库消失', () => {
   assert.equal(source.includes('打开后暂无新调用'), false, '该文案必须删掉')
 })
 
+test('看板显示「无回答 N」，成功率不再把空正文算成功', { skip }, () => {
+  const { view } = bootView()
+  const payload = {
+    ok: true,
+    state: 'ready',
+    grain: 'hour',
+    windowHours: 24,
+    peak: 1,
+    buckets: [{ key: 'k', label: '10:00', day: '1/1', gateways: { jev: { calls: 0, tokens: 0, fail: 0 }, kimi: { calls: 3, tokens: 0, fail: 1 }, dsf: { calls: 0, tokens: 0, fail: 0 } } }],
+    totals: {
+      jev: { calls: 0, ok: 0, fail: 0, tokens: 0, avgMs: 0 },
+      kimi: { calls: 3, ok: 3, fail: 0, tokens: 30, avgMs: 100, unanswered: 1, answered: 2, notSent: 0, probeCalls: 0 },
+      dsf: { calls: 0, ok: 0, fail: 0, tokens: 0, avgMs: 0 },
+    },
+    today: { jev: { calls: 0, tokens: 0 }, kimi: { calls: 0, tokens: 0 }, dsf: { calls: 0, tokens: 0 } },
+    recent: [
+      { t: new Date().toISOString(), g: 'kimi', tool: 'call', ok: true, kind: 'no-answer', sent: true, answered: false, ms: 100, pt: 10, ct: 0 },
+      { t: new Date().toISOString(), g: 'kimi', tool: 'call', ok: false, kind: 'not-sent', sent: false, answered: false, ms: 0, pt: 0, ct: 0 },
+    ],
+  }
+  const text = visibleText(render(reactPkgs, view, { data: payload, hours: 24, error: '', onRange: () => {}, onRefresh: () => {} }))
+  assert.ok(text.includes('无回答 1'), `看板必须显示「无回答 1」：${text.slice(0, 160)}`)
+  assert.ok(text.includes('成功率 67%'), '3 次里 1 次空正文 → 成功率应 2/3=67%，不是 100%')
+  assert.ok(!text.includes('成功率 100%'))
+  assert.ok(text.includes('无回答') && text.includes('未发出'), '最近调用表要能看出「无回答 / 未发出」')
+})
+
 test('/stats 带 state，供空态卡分流', async () => {
   const home = makeHome('traffic-state')
   writeStore(home)
