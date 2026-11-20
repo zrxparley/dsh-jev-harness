@@ -98,6 +98,30 @@ dsh plugin add @zrxparley/dsh-jev-harness
 
 Or DSH Settings → Plugins → Add plugin → search `@zrxparley/dsh-jev-harness`.
 
+## Client bundle id and release installs
+
+DSH's client module loader keys every bundle factory by its **boot-manifest row id**, which is
+the installed package name. A client half that hardcodes the other name never materializes:
+the loader throws `no registered factory for "<id>"` and the panel silently never mounts.
+
+`lib/client.js` therefore derives its id at load time from `window.__DSH_BOOT__.entries`
+(the row whose id ends in `jev-harness`, with a `/client` suffix stripped), and falls back to
+`@local/jev-harness` when no manifest is present (unit tests, older hosts). Both install modes
+work with the same file:
+
+| Install mode | manifest row id | registered id |
+|---|---|---|
+| local bundle | `@local/jev-harness` | `@local/jev-harness` |
+| npm / tarball | `@zrxparley/dsh-jev-harness` | `@zrxparley/dsh-jev-harness` |
+
+Verified without npm: `test/release-pack.test.js` builds a tarball from `package.json`'s `files`
+with the system tar, unpacks it, loads the unpacked `lib/client.js` against a release-shaped
+manifest, and asserts that **both** `main` and `sidebar.panellist` register with components.
+`test/bundle-id.test.js` locks the id derivation itself (npm id, local id, `/client` suffix,
+missing manifest, unrelated entries). With npm available, run `npm pack` and feed the tarball
+to the same assertions.
+
+
 ## Configure
 
 Fill the in-plugin settings panel (written to `~/.dsh/jev-harness.json`, mode 0600 — keys never enter the repo or the config file):

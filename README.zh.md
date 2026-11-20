@@ -100,6 +100,27 @@ dsh plugin add @zrxparley/dsh-jev-harness
 
 或在 DSH 设置 → 插件 → Add plugin 搜索 `@zrxparley/dsh-jev-harness`。
 
+## 客户端 bundle id 与发布态
+
+DSH 的客户端模块系统以 **boot manifest 的行 id**（即安装包名）作为 factory 的键。客户端如果
+硬编码了另一个名字，`materialize()` 就取不到 factory，报 `no registered factory for "<id>"`，
+面板会静默不挂载。
+
+所以 `lib/client.js` 在加载时从 `window.__DSH_BOOT__.entries` 里找出属于本插件的那一行
+（id 以 `jev-harness` 结尾，`/client` 后缀按宿主规则剥掉），没有 manifest 时回退到
+`@local/jev-harness`（单元测试、旧宿主）。同一份文件支持两种安装方式：
+
+| 安装方式 | manifest 行 id | 实际注册 id |
+|---|---|---|
+| 本地 bundle | `@local/jev-harness` | `@local/jev-harness` |
+| npm / tarball | `@zrxparley/dsh-jev-harness` | `@zrxparley/dsh-jev-harness` |
+
+本机没有 npm，用系统 tar 复刻发布态：`test/release-pack.test.js` 按 `package.json` 的
+`files` 打包、解包，从解出来的 `lib/client.js` 装载，断言 **main 与 sidebar.panellist 两个槽位
+都注册出组件**；`test/bundle-id.test.js` 单独锁 id 推导（npm id、本地 id、`/client` 后缀、
+无 manifest、无关 entry）。有 npm 时换成 `npm pack` 喂给同一组断言即可。
+
+
 ## 配置
 
 在插件设置面板里填写（写入 `~/.dsh/jev-harness.json`，权限 0600，密钥不会进配置文件或仓库）：

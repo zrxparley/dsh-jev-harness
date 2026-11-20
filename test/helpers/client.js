@@ -58,8 +58,8 @@ export function requireReactOrSkip() {
  * 沙箱只给 window.__ModuleLoader__ / console / fetch / 定时器；
  * fetch 必须是测试已装好的 stub，否则会走真网络。
  */
-export function loadClient(reactPkgs, { fetch = globalThis.fetch } = {}) {
-  const source = fs.readFileSync(CLIENT, 'utf8')
+export function loadClient(reactPkgs, { fetch = globalThis.fetch, boot, clientPath = CLIENT } = {}) {
+  const source = fs.readFileSync(clientPath, 'utf8')
   const captured = { id: null, exports: null }
   const fakeRequire = (name) => {
     if (name === 'react') return reactPkgs.react
@@ -69,6 +69,7 @@ export function loadClient(reactPkgs, { fetch = globalThis.fetch } = {}) {
   }
   const sandbox = {
     window: {
+      ...(boot === undefined ? {} : { __DSH_BOOT__: boot }),
       __ModuleLoader__: {
         load({ id, factory }) {
           captured.id = id
@@ -84,7 +85,7 @@ export function loadClient(reactPkgs, { fetch = globalThis.fetch } = {}) {
     clearInterval,
   }
   vm.createContext(sandbox)
-  vm.runInContext(source, sandbox, { filename: CLIENT })
+  vm.runInContext(source, sandbox, { filename: clientPath })
   if (!captured.exports) throw new Error('ModuleLoader.load was never called')
   if (typeof captured.exports.apply !== 'function') throw new Error('client exports.apply is missing')
   return captured

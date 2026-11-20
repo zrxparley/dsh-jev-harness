@@ -31,6 +31,8 @@ test/
   panel-render.test.js      主面板真渲染：总开关 / 流量看板 / 技能库 / 39 个技能
   traffic-board.test.js     流量看板 24 小时与 7 天两种粒度
   bridge-routes.test.js     status / save / toggle / stats / test 五条设置桥路由
+  bundle-id.test.js         客户端 bundle id 与宿主 manifest 的契约（#27）
+  release-pack.test.js      按 files 打包/解包后的客户端挂载 smoke（#27）
   usage-hour.test.js        记账与 /stats 小时粒度
   usage-day.test.js         7 天视图读日汇总（v1.6.0 事故回归）
   usage-integrity.test.js   账本损坏隔离 / 原子写 / 只读盘 / 并发记账（#25 回归）
