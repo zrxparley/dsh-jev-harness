@@ -1,0 +1,9 @@
+{
+  "root": "repo-main",
+  "commit": "deadbeefcafe",
+  "skills": [
+    { "id": "engineering/alpha", "description": "first skill" },
+    { "id": "engineering/beta", "description": "second skill" },
+    { "id": "engineering/gamma", "description": "third skill" }
+  ]
+}

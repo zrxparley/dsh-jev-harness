@@ -1,0 +1,37 @@
+{
+  "hour": {
+    "hours": 24,
+    "peak": 8,
+    "totals": {
+      "jev": { "calls": 41, "ok": 41, "fail": 0, "tokens": 3120, "avgMs": 210 },
+      "kimi": { "calls": 27, "ok": 26, "fail": 1, "tokens": 18400, "avgMs": 3200 },
+      "dsf": { "calls": 53, "ok": 53, "fail": 0, "tokens": 41020, "avgMs": 1750 }
+    },
+    "today": {
+      "jev": { "calls": 9, "fail": 0, "tokens": 700 },
+      "kimi": { "calls": 4, "fail": 0, "tokens": 2100 },
+      "dsf": { "calls": 11, "fail": 0, "tokens": 8800 }
+    },
+    "recent": [
+      { "t": "2026-11-19T10:00:00.000Z", "g": "kimi", "m": "kimi-k3.1-pro", "tool": "call", "ok": true, "status": 200, "ms": 4100, "pt": 146, "ct": 362 },
+      { "t": "2026-11-19T09:59:00.000Z", "g": "dsf", "m": "deepseek-v4.1-flash-1017", "tool": "call", "ok": false, "status": 500, "ms": 900, "pt": 40, "ct": 0 }
+    ]
+  },
+  "day": {
+    "hours": 168,
+    "peak": 8,
+    "totals": {
+      "jev": { "calls": 41, "ok": 41, "fail": 0, "tokens": 3120, "avgMs": 210 },
+      "kimi": { "calls": 27, "ok": 26, "fail": 1, "tokens": 18400, "avgMs": 3200 },
+      "dsf": { "calls": 53, "ok": 53, "fail": 0, "tokens": 41020, "avgMs": 1750 }
+    },
+    "today": {
+      "jev": { "calls": 9, "fail": 0, "tokens": 700 },
+      "kimi": { "calls": 4, "fail": 0, "tokens": 2100 },
+      "dsf": { "calls": 11, "fail": 0, "tokens": 8800 }
+    },
+    "recent": [
+      { "t": "2026-11-19T10:00:00.000Z", "g": "kimi", "m": "kimi-k3.1-pro", "tool": "call", "ok": true, "status": 200, "ms": 4100, "pt": 146, "ct": 362 }
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+name: test
+
+# 每次 push / PR 都跑一遍离线回归。测试内部把 fetch 全部 stub 掉，
+# 进程里不发起任何真实网络请求；只有 npm install 这一步会取 react 依赖。
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install devDependencies (react / react-dom for the render tests)
+        run: npm install --no-audit --no-fund
+      - name: Syntax check
+        run: npm run check
+      - name: Offline regression suite
+        run: npm test

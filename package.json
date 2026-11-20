@@ -42,6 +42,14 @@
     "README.zh.md",
     "LICENSE"
   ],
+  "scripts": {
+    "check": "node --check index.js && node --check lib/client.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "devDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
   "dsh": {
     "manifestVersion": 1,
     "bundle": {

@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "jevBaseUrl": "https://jev.test/v1",
+  "jevApiKey": "test-jev-key",
+  "jevModel": "jev-1.14.0",
+  "kimiBaseUrl": "https://kimi.test/v1",
+  "kimiApiKey": "test-kimi-key",
+  "kimiModel": "kimi-k3.1-pro",
+  "dsfBaseUrl": "https://dsf.test/v1",
+  "dsfApiKey": "test-dsf-key",
+  "dsfModel": "deepseek-v4.1-flash-1017",
+  "timeoutMs": 2000
+}
