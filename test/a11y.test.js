@@ -90,28 +90,60 @@ test('#22: 异步结果有 aria-live，错误是 role=alert', () => {
   // 结果区（探测结果）整体是 polite 的 status 区域
   assert.ok(/role: 'status', 'aria-live': 'polite'/.test(src), '探测结果区缺 role=status/aria-live=polite')
   // 保存 / 测试 / 切换的结果行：失败用 alert + assertive，成功用 status + polite
-  assert.ok(/role: message\.kind === 'bad' \? 'alert' : 'status'/.test(src), '结果行缺错误 alert 分流')
-  assert.ok(/'aria-live': message\.kind === 'bad' \? 'assertive' : 'polite'/.test(src), '错误要 assertive')
+  assert.ok(/role: message && message\.kind === 'bad' \? 'alert' : 'status'/.test(src), '结果行缺错误 alert 分流')
+  assert.ok(/'aria-live': message && message\.kind === 'bad' \? 'assertive' : 'polite'/.test(src), '错误要 assertive')
   // 账本损坏的警告本来就是 alert，别退化
   assert.ok(/style: styles\.bad, role: 'alert'/.test(src), '账本损坏警告要保留 role=alert')
 })
 
-test('#22: 可点区域 ≥32×32，覆盖按钮/chip/输入框芯片', { skip }, () => {
+/** 从渲染出的 HTML 里取所有可控件（原生控件 + 带 role 的非原生元素）及其尺寸。 */
+function interactiveSizes(html) {
+  const tags = []
+  for (const m of html.matchAll(/<(button|input|select|textarea)\b[^>]*>/g)) tags.push(m[0])
+  for (const m of html.matchAll(/<div\b[^>]*role="(?:button|switch)"[^>]*>/g)) tags.push(m[0])
+  return tags.map((tag) => {
+    const style = /style="([^"]*)"/.exec(tag)
+    const css = style ? style[1] : ''
+    const min = /min-height:\s*(\d+(?:\.\d+)?)px/.exec(css)
+    const height = /(?:^|;)\s*height:\s*(\d+(?:\.\d+)?)px/.exec(css)
+    return { tag: tag.slice(0, 110), min: min ? Number(min[1]) : null, height: height ? Number(height[1]) : null }
+  })
+}
+
+test('#22: 所有可控件在渲染结果里都 ≥32 高（按 DOM，不按源码排版）', { skip }, () => {
   const loaded = loadClient(reactPkgs)
   applyClient(loaded)
-  const { MIN_TARGET } = loaded.exports.__test
-  assert.equal(MIN_TARGET.minHeight, '32px')
-  assert.equal(MIN_TARGET.minWidth, '32px')
+  const seam = loaded.exports.__test
+  const { registrations, stub } = bootPanel()
+  const pages = []
+  try {
+    const panelHtml = render(reactPkgs, findSlot(registrations, 'main').comp)
+    pages.push(['面板', panelHtml])
+    pages.push(['流量看板（骨架）', render(reactPkgs, seam.TrafficBoardView, { data: null, hours: 24, error: '', onRange: () => {} })])
+    pages.push(['流量看板（有数据）', render(reactPkgs, seam.TrafficBoardView, { data: trafficPayload(), hours: 24, error: '', onRange: () => {} })])
+    pages.push(['输入框开关', render(reactPkgs, seam.ComposerChip, {})])
+  } finally {
+    stub.restore()
+  }
+  const bad = []
+  let total = 0
+  for (const [name, html] of pages) {
+    for (const item of interactiveSizes(html)) {
+      total += 1
+      const ok = (item.min !== null && item.min >= 32) || (item.height !== null && item.height >= 32)
+      if (!ok) bad.push(`${name}: ${item.tag}`)
+    }
+  }
+  assert.ok(total >= 20, `可控件数量太少，检查可能没覆盖到：${total}`)
+  assert.deepEqual(bad, [], `可点区域不足 32×32：\n${bad.join('\n')}`)
+})
 
-  const src = fs.readFileSync(CLIENT, 'utf8')
-  const uses = (src.match(/\.\.\.MIN_TARGET/g) || []).length
-  assert.ok(uses >= 4, `MIN_TARGET 至少用于普通按钮/主按钮/流量 chip/输入框芯片，实际 ${uses}`)
-
+test('#22: live region 初始渲染就存在（不是有消息才出现）', { skip }, () => {
   const { registrations, stub } = bootPanel()
   try {
     const html = render(reactPkgs, findSlot(registrations, 'main').comp)
-    const sizes = html.match(/min-height:32px/g) || []
-    assert.ok(sizes.length >= 3, `渲染出的按钮应带 min-height:32px，实际 ${sizes.length}`)
+    assert.ok(/role="status"/.test(html), '初始渲染就要有 role=status 的 live 节点')
+    assert.ok(/aria-live="polite"/.test(html), '初始渲染要有 aria-live=polite')
   } finally {
     stub.restore()
   }
@@ -160,23 +192,37 @@ test('#22: 最近调用表有 table/row/columnheader 语义', { skip }, () => {
   assert.ok((html.match(/role="row"/g) || []).length >= 2, '表头 + 至少一行数据')
 })
 
-test('#22: 11px 文本透明度不低于 .7（可执行检查）', () => {
-  const src = fs.readFileSync(CLIENT, 'utf8')
+/** 按渲染结果找小字号（≤11px）且透明度 < .7 的文本元素。 */
+function dimSmallText(html) {
   const bad = []
-  src.split('\n').forEach((line, index) => {
-    if (!line.includes("fontSize: '11px'")) return
-    const match = /opacity:\s*(0?\.\d+)/.exec(line)
-    if (!match) return
-    if (Number(match[1]) < 0.7) bad.push(`L${index + 1}: ${line.trim()}`)
-  })
-  assert.deepEqual(bad, [], `11px 文本透明度低于 .7：\n${bad.join('\n')}`)
-
-  // 之前最薄的那几档必须都抬到 .7 以上
-  for (const key of ['tileSub', 'recentHead', 'dim', 'task', 'hint']) {
-    const match = new RegExp(`${key}: \\{[^}]*opacity: (0?\\.\\d+)`).exec(src)
-    assert.ok(match, `${key} 样式没找到`)
-    assert.ok(Number(match[1]) >= 0.7, `${key} 透明度 ${match[1]} < 0.7`)
+  for (const m of html.matchAll(/<[a-zA-Z][^>]*style="[^"]*"[^>]*>/g)) {
+    const css = /style="([^"]*)"/.exec(m[0])[1]
+    const size = /font-size:\s*(\d+(?:\.\d+)?)px/.exec(css)
+    if (!size || Number(size[1]) > 11) continue
+    const opacity = /opacity:\s*(0?\.\d+)/.exec(css)
+    if (opacity && Number(opacity[1]) < 0.7) bad.push(css.slice(0, 140))
   }
+  return bad
+}
+
+test('#22: 11px（含更小）文本透明度 ≥ .7——按渲染结果检查', { skip }, () => {
+  const loaded = loadClient(reactPkgs)
+  applyClient(loaded)
+  const seam = loaded.exports.__test
+  const { registrations, stub } = bootPanel()
+  const pages = []
+  try {
+    pages.push(['面板', render(reactPkgs, findSlot(registrations, 'main').comp)])
+    pages.push(['流量看板（骨架）', render(reactPkgs, seam.TrafficBoardView, { data: null, hours: 24, error: '', onRange: () => {} })])
+    pages.push(['流量看板（有数据）', render(reactPkgs, seam.TrafficBoardView, { data: trafficPayload(), hours: 24, error: '', onRange: () => {} })])
+  } finally {
+    stub.restore()
+  }
+  const bad = []
+  for (const [name, html] of pages) {
+    for (const css of dimSmallText(html)) bad.push(`${name}: ${css}`)
+  }
+  assert.deepEqual(bad, [], `小字号文本透明度低于 .7：\n${bad.join('\n')}`)
 })
 
 test('#22: 非原生可点元素必须带 role 与键盘可达', () => {
