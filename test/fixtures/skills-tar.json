@@ -2,8 +2,85 @@
   "root": "repo-main",
   "commit": "deadbeefcafe",
   "skills": [
-    { "id": "engineering/alpha", "description": "first skill" },
-    { "id": "engineering/beta", "description": "second skill" },
-    { "id": "engineering/gamma", "description": "third skill" }
+    {
+      "id": "engineering/skill-01",
+      "description": "skill number 1"
+    },
+    {
+      "id": "engineering/skill-02",
+      "description": "skill number 2"
+    },
+    {
+      "id": "engineering/skill-03",
+      "description": "skill number 3"
+    },
+    {
+      "id": "engineering/skill-04",
+      "description": "skill number 4"
+    },
+    {
+      "id": "engineering/skill-05",
+      "description": "skill number 5"
+    },
+    {
+      "id": "engineering/skill-06",
+      "description": "skill number 6"
+    },
+    {
+      "id": "engineering/skill-07",
+      "description": "skill number 7"
+    },
+    {
+      "id": "engineering/skill-08",
+      "description": "skill number 8"
+    },
+    {
+      "id": "engineering/skill-09",
+      "description": "skill number 9"
+    },
+    {
+      "id": "engineering/skill-10",
+      "description": "skill number 10"
+    },
+    {
+      "id": "engineering/skill-11",
+      "description": "skill number 11"
+    },
+    {
+      "id": "engineering/skill-12",
+      "description": "skill number 12"
+    },
+    {
+      "id": "engineering/skill-13",
+      "description": "skill number 13"
+    },
+    {
+      "id": "engineering/skill-14",
+      "description": "skill number 14"
+    },
+    {
+      "id": "engineering/skill-15",
+      "description": "skill number 15"
+    },
+    {
+      "id": "engineering/skill-16",
+      "description": "skill number 16"
+    },
+    {
+      "id": "engineering/skill-17",
+      "description": "skill number 17"
+    },
+    {
+      "id": "engineering/skill-18",
+      "description": "skill number 18"
+    },
+    {
+      "id": "engineering/skill-19",
+      "description": "skill number 19"
+    },
+    {
+      "id": "engineering/skill-20",
+      "description": "skill number 20"
+    }
   ]
 }

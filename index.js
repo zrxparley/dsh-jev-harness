@@ -1855,19 +1855,40 @@ export function apply(ctx, config = {}) {
   }
 
   /** Minimal tar reader: enough for a GitHub source tarball (ustar, 512-byte blocks). */
+  /**
+   * Minimal tar reader for a GitHub source tarball.
+   *
+   * A malformed header must THROW, never silently truncate the catalogue (#28):
+   * one bad size field used to produce `NaN`, the loop exited quietly, and the
+   * refresh replaced 39 skills with 3 while reporting success.
+   */
   function readTar(buf) {
     const files = new Map()
     let offset = 0
     while (offset + 512 <= buf.length) {
       const header = buf.subarray(offset, offset + 512)
       if (header.every(byte => byte === 0)) break
+      const magic = header.subarray(257, 262).toString('ascii')
+      if (magic !== 'ustar') {
+        throw new Error(`tar: 头部 magic 非法（偏移 ${offset}: ${JSON.stringify(magic)}），拒绝解析`)
+      }
       const field = (start, length) => header.subarray(start, start + length).toString('utf8').replace(/\0.*$/, '')
       const prefix = field(345, 155)
       const rawName = field(0, 100)
       const name = prefix ? `${prefix}/${rawName}` : rawName
-      const size = parseInt(field(124, 12).trim() || '0', 8)
+      const rawSize = field(124, 12).trim() || '0'
+      if (!/^[0-7]+$/.test(rawSize)) {
+        throw new Error(`tar: 条目 ${JSON.stringify(name)} 的 size 字段非法（${JSON.stringify(rawSize)}），拒绝解析`)
+      }
+      const size = parseInt(rawSize, 8)
+      if (!Number.isFinite(size) || size < 0) {
+        throw new Error(`tar: 条目 ${JSON.stringify(name)} 的 size 无法解析，拒绝解析`)
+      }
       const type = field(156, 1)
       const dataStart = offset + 512
+      if (dataStart + size > buf.length) {
+        throw new Error(`tar: 条目 ${JSON.stringify(name)} 声明 ${size} 字节，超出归档长度，归档被截断`)
+      }
       if (type === '0' || type === '') {
         files.set(name, buf.subarray(dataStart, dataStart + size))
       }
@@ -1908,9 +1929,13 @@ export function apply(ctx, config = {}) {
     } finally {
       link.dispose()
     }
+    // 当前用户实际看到的目录（可能是内置快照，也可能是上一次刷新结果）。
+    const previousSkills = skillCatalog().skills
+    const previousIds = previousSkills.map(skill => skill.id)
+
     const files = readTar(zlib.gunzipSync(buf))
     const skills = []
-    const cachedNames = []
+    const bodies = []
     for (const [fullPath, data] of files) {
       const match = fullPath.match(/(?:^|\/)skills\/([^/]+)\/([^/]+)\/SKILL\.md$/)
       if (!match) continue
@@ -1936,14 +1961,34 @@ export function apply(ctx, config = {}) {
         bytes: data.length,
         siblings: siblings.sort(),
       })
-      const cacheFile = path.join(skillsDir(), id.replace(/[^a-zA-Z0-9._-]+/g, '__') + '.md')
-      try {
-        fs.writeFileSync(cacheFile, source, { mode: 0o600 })
-        cachedNames.push(cacheFile)
-      } catch { /* cache is optional */ }
+      bodies.push({ id, source })
     }
     if (skills.length === 0) throw new Error('no skills found in the tarball — check skillsRepo / skillsRef')
     skills.sort((a, b) => a.id.localeCompare(b.id))
+
+    // 完整性：每个 SKILL.md 都要有 frontmatter 的 name 与 description，
+    // 缺一个就整体拒绝，绝不落盘半套目录（#28）。
+    const incomplete = skills.filter(skill => !skill.name || !skill.description).map(skill => skill.id)
+    if (incomplete.length > 0) {
+      throw new Error(`技能目录不完整：${incomplete.slice(0, 5).join(', ')}${incomplete.length > 5 ? ` 等 ${incomplete.length} 条` : ''} 缺少 frontmatter name/description`)
+    }
+
+    // 数量护栏：一次刷新不许把目录砍到「不足 10 条」或「不足原来的一半」，
+    // 宁可保留旧目录并报错，也不许把 39 条静默换成 3 条（#28）。
+    const minimum = Math.max(10, Math.ceil(previousSkills.length / 2))
+    if (skills.length < minimum) {
+      throw new Error(`拒绝用 ${skills.length} 条覆盖现有 ${previousSkills.length} 条技能目录（下限 ${minimum} 条）；原目录保留`)
+    }
+
+    // 只有全部校验通过后才写正文缓存。
+    const cachedNames = []
+    for (const body of bodies) {
+      const cacheFile = path.join(skillsDir(), body.id.replace(/[^a-zA-Z0-9._-]+/g, '__') + '.md')
+      try {
+        fs.writeFileSync(cacheFile, body.source, { mode: 0o600 })
+        cachedNames.push(cacheFile)
+      } catch { /* cache is optional */ }
+    }
 
     let commit = ''
     try {
@@ -1956,12 +2001,6 @@ export function apply(ctx, config = {}) {
       }
     } catch { /* commit id is informational */ }
 
-    let previous = []
-    try {
-      const old = JSON.parse(fs.readFileSync(skillsCatalogFile(), 'utf8'))
-      if (Array.isArray(old?.skills)) previous = old.skills.map(skill => skill.id)
-    } catch { /* first refresh */ }
-
     const snapshot = {
       repo,
       ref,
@@ -1969,16 +2008,26 @@ export function apply(ctx, config = {}) {
       takenAt: new Date().toISOString(),
       count: skills.length,
     }
+    // 原子替换：先写同目录临时文件再 rename，写一半不会顶掉旧 catalog。
     fs.mkdirSync(skillsDir(), { recursive: true, mode: 0o700 })
-    fs.writeFileSync(skillsCatalogFile(), JSON.stringify({ snapshot, skills }, null, 2), { mode: 0o600 })
+    const catalogFile = skillsCatalogFile()
+    const tempFile = `${catalogFile}.${process.pid}-${randomUUID().slice(0, 8)}.tmp`
+    try {
+      fs.writeFileSync(tempFile, JSON.stringify({ snapshot, skills }, null, 2), { mode: 0o600 })
+      fs.renameSync(tempFile, catalogFile)
+    } catch (err) {
+      try { fs.unlinkSync(tempFile) } catch { /* 已被 rename 或本来就没写成 */ }
+      throw new Error(`写入技能目录失败，原目录保留：${shortError(err)}`)
+    }
+
     const now = new Set(skills.map(skill => skill.id))
-    const before = new Set(previous)
+    const before = new Set(previousIds)
     return {
       repo,
       commit: snapshot.commit,
       count: skills.length,
       added: skills.filter(skill => !before.has(skill.id)).length,
-      removed: previous.filter(id => !now.has(id)).length,
+      removed: previousIds.filter(id => !now.has(id)).length,
       cached: cachedNames.length,
     }
   }

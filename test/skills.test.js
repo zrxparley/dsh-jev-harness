@@ -112,26 +112,27 @@ test('refresh 解析真实 tarball，重写 catalog.json 并让 list 跟随', as
     const refreshed = await callRoute(routes, REFRESH, { method: 'POST' })
     assert.equal(refreshed.status, 200)
     assert.equal(refreshed.body.ok, true, `刷新失败：${refreshed.body.error || ''}`)
-    assert.equal(refreshed.body.count, 3)
-    assert.equal(refreshed.body.added, 3)
-    assert.equal(refreshed.body.removed, 0, '首次刷新时本地还没有 catalog 文件，没有可移除的旧条目')
+    assert.equal(refreshed.body.count, 20)
+    assert.equal(refreshed.body.added, 20)
+    assert.equal(refreshed.body.removed, 39, '内置 39 条被刷新结果替换，应记 39 条移除')
 
     const status = (await callRoute(routes, STATUS, { url: STATUS })).body
-    assert.equal(status.skills.count, 3, '刷新后目录应变成 tarball 里的 3 条')
+    assert.equal(status.skills.count, 20, '刷新后目录应变成 tarball 里的 20 条')
     assert.equal(status.skills.source, 'refreshed')
-    assert.equal(status.skills.cached, 3, '正文应缓存成 3 个 .md')
+    assert.equal(status.skills.cached, 20, '正文应缓存成 20 个 .md')
 
     const catalogFile = path.join(home, 'jev-harness-skills', 'catalog.json')
     assert.ok(fileExists(catalogFile), 'catalog.json 没有落盘')
     const catalog = readJsonFile(catalogFile)
+    assert.equal(catalog.skills.length, 20)
     assert.deepEqual(
-      catalog.skills.map((entry) => entry.id),
-      ['engineering/alpha', 'engineering/beta', 'engineering/gamma'],
+      catalog.skills.slice(0, 3).map((entry) => entry.id),
+      ['engineering/skill-01', 'engineering/skill-02', 'engineering/skill-03'],
     )
     assert.equal(catalog.snapshot.commit, fixture.commit.slice(0, 7), '快照里存的是 7 位短 commit')
 
     const list = await tools.get('harness_skill').execute({ action: 'list' }, {})
-    assert.equal(String(list.text).split('\n').length, 3, 'list 应跟随刷新后的目录')
+    assert.equal(String(list.text).split('\n').length, 20, 'list 应跟随刷新后的目录')
 
     // 只允许打这两个域名
     for (const url of stub.urls()) {

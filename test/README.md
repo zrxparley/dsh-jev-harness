@@ -38,6 +38,7 @@ test/
   usage-integrity.test.js   账本损坏隔离 / 原子写 / 只读盘 / 并发记账（#25 回归）
   panel-warning.test.js     账本损坏时面板上的可见提示
   skills.test.js            技能目录 / 刷新 / JEV pick
+  skills-guard.test.js      坏 tar / 空 tar / 缺字段 / 数量腰斩 / 原子替换（#28）
   helpers/record-child.js   并发用例的子进程：往同一个 DSH_HOME 连记 N 次
 ```
 
