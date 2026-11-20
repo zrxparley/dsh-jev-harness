@@ -142,7 +142,7 @@ function resolveConfig(config = {}, store = readStore()) {
     jev: {
       base: pick(store.jevBaseUrl, c.jevBaseUrl, env('JEV_BASE_URL')),
       key: pick(store.jevApiKey, c.jevApiKey, env('JEV_API_KEY')),
-      model: pick(store.jevModel, c.jevModel, env('JEV_MODEL'), 'jev-router'),
+      model: pick(store.jevModel, c.jevModel, env('JEV_MODEL'), 'jev-latest'),
     },
     kimi: {
       base: pick(store.kimiBaseUrl, c.kimiBaseUrl, env('KIMI_BASE_URL')),
@@ -655,6 +655,26 @@ function combineSignal(cfgTimeout, execSignal) {
   }
 }
 
+/** 模型 id 报错时回捞网关真实可用的 id（#29）；失败就当没有，不影响主错误。 */
+async function listGatewayModels(route, cfg2) {
+  const url = modelsUrl(route.base)
+  if (!url) return []
+  const link = combineSignal(cfg2.timeoutMs, undefined)
+  try {
+    const res = await fetch(url, {
+      headers: route.key ? { authorization: `Bearer ${route.key}` } : {},
+      signal: link.signal,
+    })
+    if (!res.ok) return []
+    const body = JSON.parse(await res.text())
+    return (Array.isArray(body?.data) ? body.data : []).map(model => model?.id).filter(Boolean)
+  } catch {
+    return []
+  } finally {
+    link.dispose()
+  }
+}
+
 async function chat(route, messages, opts, cfg, exec) {
   const url = chatUrl(route.base)
   if (!url) throw new Error(`no base URL configured for ${opts.provider}; set it in plugin settings or ${opts.provider.toUpperCase()}_BASE_URL`)
@@ -704,7 +724,15 @@ async function chat(route, messages, opts, cfg, exec) {
       ms: Date.now() - startedAt,
       error: raw.slice(0, 160),
     })
-    throw new Error(`HTTP ${res.status} from ${opts.provider}: ${raw.slice(0, 500)}`)
+    let detail = `HTTP ${res.status} from ${opts.provider}: ${raw.slice(0, 300)}`
+    const looksLikeModelId = res.status === 404 || /model[^"]{0,48}(not found|does not exist|unknown|invalid)/i.test(raw)
+    if (looksLikeModelId) {
+      const available = await listGatewayModels(route, cfg)
+      detail += available.length
+        ? `\n${opts.provider} 不认识模型 id「${route.model}」，可用模型 id 示例：${available.slice(0, 8).join(', ')}${available.length > 8 ? ` …（共 ${available.length} 个）` : ''}`
+        : `\n${opts.provider} 不认识模型 id「${route.model}」；该网关没返回模型列表，去设置页点「测试连通」看真实 id。`
+    }
+    throw new Error(detail)
   }
   let body
   try { body = JSON.parse(raw) } catch { throw new Error(`non-JSON response from ${opts.provider}: ${raw.slice(0, 300)}`) }
