@@ -129,3 +129,19 @@ test('读取失败时把错误显示出来，不装作有数据', { skip }, () =
   assert.ok(text.includes('正在读取统计'), 'data 没回来时应是骨架')
   assert.ok(!text.includes('0 次'), '错误态不许渲染假的 0 次')
 })
+
+test('#4: judge 行显示 confidence 与来源', { skip }, () => {
+  const TrafficBoardView = bootView()
+  const data = buildPayload({
+    ...fixture.hour,
+    recent: [
+      { t: new Date().toISOString(), g: 'jev', m: 'jev-1', tool: 'judge', ok: true, sent: true, answered: true, kind: 'ok', status: 200, ms: 120, pt: 5, ct: 1, choice: 'execution', confidence: 0.88, source: 'jev' },
+      { t: new Date().toISOString(), g: 'dsf', m: 'deepseek', tool: 'call', ok: true, sent: true, answered: true, kind: 'ok', status: 200, ms: 800, pt: 100, ct: 40 },
+    ],
+  }, 24)
+  const html = render(reactPkgs, TrafficBoardView, { data, hours: 24, error: '', onRange: () => {} })
+  const text = visibleText(html)
+  assert.ok(text.includes('judge'), 'judge 行应出现')
+  assert.ok(text.includes('0.88'), `judge 行应显示 confidence 0.88，实际：${text.slice(0, 200)}`)
+  assert.ok(text.includes('jev'), 'judge 行应显示来源 jev')
+})

@@ -68,10 +68,13 @@ const STORE_FIELDS = [
   'decisionProvider', 'decisionModel',
   'executionProvider', 'executionModel',
   'followModel',
+  'lowConfidenceThreshold',
 ]
 
 /** Booleans are stored as real JSON booleans, not strings. */
 const STORE_BOOLEANS = new Set(['enabled', 'skillsAuto', 'followModel'])
+// #4: numeric store fields must survive readStore (otherwise the threshold is dropped).
+const STORE_NUMBERS = new Set(['lowConfidenceThreshold'])
 
 function truthy(value, fallback) {
   if (typeof value === 'boolean') return value
@@ -99,6 +102,10 @@ function readStore() {
         const value = parsed[key]
         if (STORE_BOOLEANS.has(key)) {
           if (typeof value === 'boolean') out[key] = value
+          continue
+        }
+        if (STORE_NUMBERS.has(key)) {
+          if (typeof value === 'number' && Number.isFinite(value)) out[key] = value
           continue
         }
         if (typeof value === 'string' && value.trim() !== '') out[key] = value.trim()
@@ -192,6 +199,19 @@ function resolveConfig(config = {}, store = readStore()) {
     // Mirror the routed decision into DSH's own model selector, so the composer
     // chip shows the model that is actually working instead of a stale one.
     followModel: store.followModel !== undefined ? truthy(store.followModel, true) : truthy(c.followModel, true),
+    // #4: below this judge confidence, escalate the task to the decision tier
+    // (Kimi) — better to pay for a correct answer than to save on a wrong one.
+    // Panel-editable; takes effect on the next call via refresh().
+    lowConfidenceThreshold: (() => {
+      // NOTE: pick() only passes non-empty strings, so it would drop a numeric
+      // threshold. Read the raw values and accept the first finite number.
+      const raw = [store.lowConfidenceThreshold, c.lowConfidenceThreshold, env('JEV_LOW_CONFIDENCE')]
+      for (const r of raw) {
+        const v = Number(r)
+        if (r !== undefined && r !== '' && Number.isFinite(v) && v >= 0 && v <= 1) return v
+      }
+      return 0.6
+    })(),
     timeoutMs: num(c.timeoutMs, 120000),
     temperature: Number.isFinite(Number(c.temperature)) ? Number(c.temperature) : 0.2,
   }
@@ -498,9 +518,10 @@ function recordDecision(entry) {
         host: entry.host && entry.host.provider && entry.host.model
           ? { provider: String(entry.host.provider), model: String(entry.host.model) }
           : null,
-        skill: entry.skill || '',
+        skill: entry.skill || 'none',  // #4: distinguish 'judged none' from 'not asked' — never an ambiguous empty string
         criteriaVersion: entry.criteriaVersion || CRITERIA_VERSION,
         difficulty: entry.difficulty || '',
+        escalated: entry.escalated === true,  // #4: was this call upgraded to decision on low confidence?
         ok: Boolean(entry.ok),
         ms: Math.round(entry.ms || 0),
         pt: entry.pt || 0,
@@ -539,6 +560,12 @@ function recordUsage(event) {
         ms: Math.round(event.ms || 0),
         pt: event.promptTokens || 0,
         ct: event.completionTokens || 0,
+        // #4: judge auditability — which choice was made, with what confidence,
+        // and from which source (jev | heuristic | fallback). Present on judge
+        // records; undefined on plain model calls.
+        choice: event.choice,
+        confidence: Number.isFinite(event.confidence) ? Number(event.confidence) : undefined,
+        source: event.source,
         error: event.error ? String(event.error).slice(0, 160) : '',
       })
     })
@@ -1303,13 +1330,6 @@ export function apply(ctx, config = {}) {
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${raw.slice(0, 200)}`)
       const body = JSON.parse(raw)
-      // ONE usage record for the whole merged judgement.
-      recordUsage({
-        gateway: 'jev', model: cfg.jev.model, tool: 'judge', ok: true, status: res.status,
-        ms: Date.now() - startedAt,
-        promptTokens: Number(body?.usage?.input_tokens) || 0,
-        completionTokens: Number(body?.usage?.output_tokens) || 0,
-      })
       const answers = body?.answers || {}
       const tierAns = answers.tier
       const skillAns = answers.skill
@@ -1321,6 +1341,17 @@ export function apply(ctx, config = {}) {
       const diffChoice = diffAns && (diffAns.choice || diffAns.noul)
       const difficulty = ['trivial', 'normal', 'hard'].includes(diffChoice) ? diffChoice : 'normal'
       const tierConf = Number(tierAns?.confidence)
+      // ONE usage record for the whole merged judgement, WITH #4 audit fields
+      // (choice / confidence / source) now that the answers are parsed.
+      recordUsage({
+        gateway: 'jev', model: cfg.jev.model, tool: 'judge', ok: true, status: res.status,
+        ms: Date.now() - startedAt,
+        promptTokens: Number(body?.usage?.input_tokens) || 0,
+        completionTokens: Number(body?.usage?.output_tokens) || 0,
+        choice: tier,
+        confidence: Number.isFinite(tierConf) ? tierConf : undefined,
+        source: tier ? 'jev' : 'heuristic',
+      })
       if (!tier) {
         return { ...heuristic(), source: 'heuristic', reason: 'jev returned no usable tier; used heuristic' }
       }
@@ -1338,7 +1369,7 @@ export function apply(ctx, config = {}) {
     } catch (err) {
       recordUsage({
         gateway: 'jev', model: cfg.jev.model, tool: 'judge', ok: false, status: 0,
-        ms: Date.now() - startedAt, error: shortError(err),
+        ms: Date.now() - startedAt, error: shortError(err), source: 'heuristic',
       })
       return { ...heuristic(), reason: `jev merged judge failed (${shortError(err)}); used heuristic` }
     }
@@ -1575,6 +1606,18 @@ export function apply(ctx, config = {}) {
           }
         }
 
+        // #4: low-confidence escalation. If the JEV judge picked a tier but was
+        // not confident enough, upgrade to the decision tier (Kimi) — pay for a
+        // correct answer rather than save on a likely-wrong one. Only applies to
+        // auto-judged tiers (an explicit user/provider choice is respected).
+        let escalated = false
+        if (judged && askedTier === 'auto' && Number.isFinite(judged.confidence)
+            && judged.confidence < cfg.lowConfidenceThreshold && tier !== 'decision') {
+          escalated = true
+          tier = 'decision'
+          note += ` · low confidence ${judged.confidence.toFixed(2)} < ${cfg.lowConfidenceThreshold}: escalated to decision (Kimi)`
+        }
+
         const forced = args.provider === 'kimi' || args.provider === 'dsf'
         const selected = forced ? args.provider : routeFor(tier).key
         const route = selected === 'kimi' ? cfg.kimi : cfg.dsf
@@ -1606,6 +1649,7 @@ export function apply(ctx, config = {}) {
             choice: judged ? judged.choice : tier,
             confidence: judged ? judged.confidence : undefined,
             difficulty: judged ? judged.difficulty : undefined,
+            escalated,
             ms: Date.now() - routedAt,
             pt: answer.promptTokens || 0,
             ct: answer.completionTokens || 0,
@@ -1627,6 +1671,7 @@ export function apply(ctx, config = {}) {
             choice: judged ? judged.choice : tier,
             confidence: judged ? judged.confidence : undefined,
             difficulty: judged ? judged.difficulty : undefined,
+            escalated,
             ms: Date.now() - routedAt,
             error: shortError(err),
           })
