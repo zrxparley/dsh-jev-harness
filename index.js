@@ -586,6 +586,8 @@ function recordDecision(entry) {
           ? { provider: String(entry.host.provider), model: String(entry.host.model) }
           : null,
         skill: entry.skill || 'none',  // #4: distinguish 'judged none' from 'not asked' — never an ambiguous empty string
+        skill2: entry.skill2 || '',      // #11: second mounted skill id ('' if only one)
+        skillBytes: Math.round(entry.skillBytes || 0),  // #11: total bytes of mounted skill bodies
         // #39: tier degradation and skill degradation are separate facts.
         skillSource: entry.skillSource || '',
         skillError: entry.skillError ? String(entry.skillError).slice(0, 160) : '',
@@ -1706,6 +1708,15 @@ export function apply(ctx, config = {}) {
     return `https://raw.githubusercontent.com/${repo}/${ref}/${skill.path}`
   }
 
+  /** #11: a sibling document lives next to the skill's SKILL.md (e.g. mocking.md). */
+  function siblingRawUrl(skill, sibling, cfg2) {
+    const repo = cfg2.skills.repo || SKILLS_URL_REPO
+    const ref = cfg2.skills.ref || 'main'
+    const dir = String(skill.path).replace(/[^/]+$/, '')
+    const name = String(sibling || '').replace(/^\/+/, '')
+    return `https://raw.githubusercontent.com/${repo}/${ref}/${dir}${name}`
+  }
+
   /** Read a skill body from the local cache, fetching once and persisting it. */
   async function skillBody(skill, cfg2, exec) {
     const cached = skillCacheFile(skill, cfg2)
@@ -1764,6 +1775,38 @@ export function apply(ctx, config = {}) {
    * with the highest-score entries so N candidates go to JEV regardless of
    * catalog size — decouples the request body from catalog growth (39 -> 200).
    */
+  /**
+   * #11 top-2: pick the SECOND skill to mount alongside the primary choice.
+   * Preference order:
+   *   1. the judge's own probabilities — the highest-probability candidate that is
+   *      NOT the primary choice and whose probability >= 0.4 (the lower bar);
+   *   2. otherwise, the next-best local keyword score (>= 6, same bar as
+   *      heuristicSkill) that is also not the primary choice;
+   *   3. null when nothing clears the bar (so we never mount a weak second).
+   * Candidates always come from the slimmed top-8 set, never the whole catalog.
+   */
+  function selectSecondSkill(primaryId, skillAns, task) {
+    const probs = skillAns && skillAns.probabilities
+    if (probs && typeof probs === 'object') {
+      let best = null
+      let bestP = 0
+      for (const [id, p] of Object.entries(probs)) {
+        const prob = Number(p)
+        if (!Number.isFinite(prob) || id === primaryId || id === SKILL_NONE) continue
+        if (prob >= 0.4 && prob > bestP && skillById(id)) { best = id; bestP = prob }
+      }
+      if (best) return best
+    }
+    // Fallback: next-best local keyword score, excluding the primary.
+    const scored = scoreSkills(task)
+    for (const entry of scored) {
+      if (entry.skill.id === primaryId) continue
+      if (entry.score >= 6) return entry.skill.id
+      break
+    }
+    return null
+  }
+
   function slimSkills(task, n = 8) {
     const scored = scoreSkills(task)
     const top = scored.slice(0, n).filter(e => e.score > 0)
@@ -1828,6 +1871,8 @@ export function apply(ctx, config = {}) {
         const confidence = Number(answer.confidence)
         return {
           id: choice,
+          // #11: second skill for top-2 mounting.
+          second: selectSecondSkill(choice, answer, task),
           confidence: Number.isFinite(confidence) ? confidence : 0,
           source: 'jev',
           reason: `jev ${body.model || cfg2.jev.model} choice=${choice}` +
@@ -1936,6 +1981,8 @@ export function apply(ctx, config = {}) {
         source: 'jev',
         choice: tier,
         skill,
+        // #11: the second skill to mount alongside the primary (top-2).
+        skill2: selectSecondSkill(skill, skillAns, task),
         difficulty,
         confidence: Number.isFinite(tierConf) ? tierConf : undefined,
         // #36: the merged judge path carries the same tier probabilities as
@@ -2137,6 +2184,7 @@ export function apply(ctx, config = {}) {
         let mounted = ''
         let skillNote = ''
         let skillId = ''
+        let skillBytes = 0  // #11: total bytes of mounted skill bodies
         let skillSource = 'off'
         let skillError = ''
         const asked = typeof args.skill === 'string' ? args.skill.trim() : ''
@@ -2156,20 +2204,31 @@ export function apply(ctx, config = {}) {
         if (merged) {
           // skill already decided by the merged judge; mount it without a 2nd request.
           skillSource = judged.source === 'jev' ? 'jev' : 'heuristic'
-          if (judged.skill && judged.skill !== SKILL_NONE) {
-            try {
-              const skill = skillById(judged.skill)
-              if (skill) {
-                const loaded = await skillBody(skill, cfg, exec)
-                mounted = skillBlock(skill, loaded.text, cfg.skills.maxChars)
-                skillId = skill.id
-                skillNote = ` · skill=${skill.id}${loaded.cached ? ' (cached)' : ''} (merged)`
-              }
-            } catch (err) {
-              skillNote = ` · skill mount failed: ${shortError(err)}`
+          // #11: mount top-1 AND top-2 (second at a lower confidence bar).
+          const mountOne = async (id) => {
+            const sk = skillById(id)
+            if (!sk) return { block: '', bytes: 0, cached: false }
+            const loaded = await skillBody(sk, cfg, exec)
+            return { block: skillBlock(sk, loaded.text, cfg.skills.maxChars), bytes: String(loaded.text || '').length, cached: loaded.cached }
+          }
+          const blocks = []
+          try {
+            if (judged.skill && judged.skill !== SKILL_NONE) {
+              const first = await mountOne(judged.skill)
+              if (first.block) { blocks.push(first.block); skillBytes += first.bytes; skillId = judged.skill }
             }
-          } else {
-            skillNote = ' · skill=none'
+            if (judged.skill2) {
+              const second = await mountOne(judged.skill2)
+              if (second.block) { blocks.push(second.block); skillBytes += second.bytes }
+            }
+            mounted = blocks.join('\n\n')
+            if (blocks.length) {
+              skillNote = ` · skill=${[judged.skill, judged.skill2].filter(Boolean).join(' + ')} (merged)`
+            } else {
+              skillNote = ' · skill=none'
+            }
+          } catch (err) {
+            skillNote = ` · skill mount failed: ${shortError(err)}`
           }
         } else if (wantSkill !== 'off') {
           try {
@@ -2274,6 +2333,8 @@ export function apply(ctx, config = {}) {
             escalated,
             skillSource,
             skillError,
+            skillBytes,
+            skill2: judged && judged.skill2 ? judged.skill2 : '',
             // #3: degraded is true for a judge-layer fallback (#39) OR an
             // execution-layer failover away from the primary provider.
             degraded: Boolean((judged && judged.degraded) || degradedFrom),
@@ -2308,6 +2369,8 @@ export function apply(ctx, config = {}) {
             escalated,
             skillSource,
             skillError,
+            skillBytes,
+            skill2: judged && judged.skill2 ? judged.skill2 : '',
             degraded: Boolean(judged && judged.degraded),
             ms: Date.now() - routedAt,
             error: shortError(err),
@@ -2593,6 +2656,7 @@ export function apply(ctx, config = {}) {
           task: { type: 'string', description: 'The task to route, for action=pick.' },
           context: { type: 'string', description: 'Optional background for action=pick.' },
           id: { type: 'string', description: 'Skill id such as "engineering/tdd", for action=read.' },
+          sibling: { type: 'string', description: 'Optional sibling document name (e.g. "mocking.md") for action=read — returns that sibling instead of SKILL.md (#11).' },
         },
       },
       output: { schema: RESULT_SCHEMA, render: render('Harness skill') },
@@ -2629,6 +2693,26 @@ export function apply(ctx, config = {}) {
             const id = String(args.id || '').trim()
             const skill = skillById(id)
             if (!skill) return result({ note: `unknown skill id "${id}" — call harness_skill action=list` })
+            // #11: `sibling` reads a bundled sibling document instead of SKILL.md.
+            const sibling = typeof args.sibling === 'string' && args.sibling.trim() ? args.sibling.trim() : ''
+            if (sibling) {
+              const link = combineSignal(cfg.timeoutMs, exec && exec.signal)
+              let raw, res
+              try {
+                res = await fetch(siblingRawUrl(skill, sibling, cfg), { signal: link.signal })
+                raw = await res.text()
+              } finally {
+                link.dispose()
+              }
+              if (!res.ok) return result({ note: `HTTP ${res.status} fetching sibling "${sibling}" of ${id}` })
+              return result({
+                ok: true,
+                provider: 'skills',
+                model: `${skill.id}/${sibling}`,
+                text: raw,
+                note: `sibling ${sibling} of ${skill.id} · ${raw.length} bytes · ${siblingRawUrl(skill, sibling, cfg)}`,
+              })
+            }
             const loaded = await skillBody(skill, cfg, exec)
             return result({
               ok: true,
@@ -3182,6 +3266,19 @@ export function apply(ctx, config = {}) {
         const allDecisions = usage.decisions || []
         const allRecent = usage.recent || []
         report.judgeQuality = judgeQuality(allDecisions, allRecent)
+        // #11: skill mount statistics — how often each skill was mounted and the
+        // total bytes mounted (top-1 + top-2), so the panel can show skill usage.
+        const mountMap = new Map()
+        for (const d of allDecisions) {
+          for (const id of [d.skill, d.skill2]) {
+            if (!id || id === 'none') continue
+            if (!mountMap.has(id)) mountMap.set(id, { id, mounts: 0, bytes: 0 })
+            const m = mountMap.get(id)
+            m.mounts += 1
+            m.bytes += Math.round(d.skillBytes || 0)
+          }
+        }
+        report.skillMounts = [...mountMap.values()].sort((a, b) => b.mounts - a.mounts)
         // #41 follow-up: the full session list (decisions + recent), so the panel
         // dropdown is not limited to the 40-row recent ring.
         report.sessions = usageSessions(usage)
