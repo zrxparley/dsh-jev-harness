@@ -26,7 +26,7 @@ import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
 import { SKILLS, SKILL_BY_ID, SKILLS_SNAPSHOT } from './skills.js'
-import { TIER_CRITERIA, TIER_INSTRUCTIONS } from './criteria.js'
+import { TIER_CRITERIA, TIER_INSTRUCTIONS, SKILL_NONE_CRITERIA, SKILL_INSTRUCTIONS, CRITERIA_VERSION } from './criteria.js'
 
 const PACKAGE_VERSION = (() => {
   try {
@@ -499,6 +499,7 @@ function recordDecision(entry) {
           ? { provider: String(entry.host.provider), model: String(entry.host.model) }
           : null,
         skill: entry.skill || '',
+        criteriaVersion: entry.criteriaVersion || CRITERIA_VERSION,
         ok: Boolean(entry.ok),
         ms: Math.round(entry.ms || 0),
         pt: entry.pt || 0,
@@ -1161,7 +1162,7 @@ export function apply(ctx, config = {}) {
   async function pickSkill(task, context, cfg2, exec) {
     const catalog = skillCatalog()
     if (!cfg2.jev.base) return heuristicSkill(task)
-    const criteria = { [SKILL_NONE]: 'None of the skills applies, or the task is too small to need one.' }
+    const criteria = { [SKILL_NONE]: SKILL_NONE_CRITERIA }
     for (const skill of catalog.skills) {
       criteria[skill.id] = `${skill.description.slice(0, 240)}`
     }
@@ -1184,7 +1185,7 @@ export function apply(ctx, config = {}) {
             questions: {
               skill: {
                 type: 'choice',
-                instructions: 'Pick the single agent skill whose instructions would most improve how this task is executed. Choose none when no skill clearly applies.',
+                instructions: SKILL_INSTRUCTIONS,
                 criteria,
               },
             },
