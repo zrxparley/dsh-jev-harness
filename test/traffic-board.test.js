@@ -308,3 +308,17 @@ test('#41: 会话下拉读 /stats.sessions，不再只列 recent 40 条里的会
   assert.ok(text.includes('s-old（60）'), `选项应带该会话的行数，实际：${text.slice(0, 400)}`)
   assert.ok(text.includes('未知会话（未携带 sessionId）'), 'unknown 仍是诚实标签')
 })
+
+test('#3: 网关冷却时流量卡显示灰点 + 剩余分钟', { skip }, () => {
+  const TrafficBoardView = bootView()
+  const data = buildPayload({ ...fixture.hour, recent: [] }, 24)
+  data.breakers = {
+    jev: { coolingDown: false, cooldownMs: 0, minutesLeft: 0 },
+    kimi: { coolingDown: true, cooldownMs: 480000, minutesLeft: 8 },
+    dsf: { coolingDown: false, cooldownMs: 0, minutesLeft: 0 },
+  }
+  const html = render(reactPkgs, TrafficBoardView, { data, hours: 24, error: '', onRange: () => {} })
+  const text = visibleText(html)
+  assert.ok(text.includes('冷却 8 分钟'), `kimi 冷却徽标应显示剩余分钟，实际：${text.slice(0, 300)}`)
+  assert.ok(!text.includes('冷却 0 分钟'), '未冷却的网关不显示冷却徽标')
+})

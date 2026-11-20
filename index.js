@@ -71,12 +71,13 @@ const STORE_FIELDS = [
   'lowConfidenceThreshold',
   'judgeTimeoutMs',
   'timeoutMs',
+  'timeoutProbe', 'timeoutExecution', 'timeoutDecision', 'timeoutReview',
 ]
 
 /** Booleans are stored as real JSON booleans, not strings. */
 const STORE_BOOLEANS = new Set(['enabled', 'skillsAuto', 'followModel'])
 // #4: numeric store fields must survive readStore (otherwise the threshold is dropped).
-const STORE_NUMBERS = new Set(['lowConfidenceThreshold', 'judgeTimeoutMs', 'timeoutMs'])
+const STORE_NUMBERS = new Set(['lowConfidenceThreshold', 'judgeTimeoutMs', 'timeoutMs', 'timeoutProbe', 'timeoutExecution', 'timeoutDecision', 'timeoutReview'])
 
 function truthy(value, fallback) {
   if (typeof value === 'boolean') return value
@@ -224,6 +225,14 @@ function resolveConfig(config = {}, store = readStore()) {
     // /save takes effect on the next call's combineSignal (the tool-REGISTRATION
     // timeout is a separate snapshot; see the reload notice in /save).
     timeoutMs: num(store.timeoutMs !== undefined ? store.timeoutMs : c.timeoutMs, 120000),
+    // #3: per-operation timeouts (probe short, execution mid, decision/review long).
+    // Each is panel-overridable via the store; defaults are the safe values.
+    timeouts: {
+      probe: num(store.timeoutProbe, 10000),
+      execution: num(store.timeoutExecution, 45000),
+      decision: num(store.timeoutDecision, 120000),
+      review: num(store.timeoutReview, 120000),
+    },
     // #39：判定超时独立于生成超时，默认 800ms；超时就兜底，不再等。
     judgeTimeoutMs: (() => {
       const raw = [store.judgeTimeoutMs, c.judgeTimeoutMs, env('JEV_JUDGE_TIMEOUT')]
@@ -583,7 +592,9 @@ function recordDecision(entry) {
         criteriaVersion: entry.criteriaVersion || CRITERIA_VERSION,
         difficulty: entry.difficulty || '',
         escalated: entry.escalated === true,  // #4: was this call upgraded to decision on low confidence?
-        degraded: entry.degraded === true,    // #39: judged, but the judge was not usable
+        degraded: entry.degraded === true,    // #39/#3: judge-layer OR execution-layer degradation
+        degradedFrom: entry.degradedFrom || '',  // #3: provider degraded away from (execution failover)
+        cooldownSkip: entry.cooldownSkip || '',  // #3: provider skipped while cooling down
 
         ok: Boolean(entry.ok),
         ms: Math.round(entry.ms || 0),
@@ -632,6 +643,9 @@ function recordUsage(event) {
         choice: event.choice,
         confidence: Number.isFinite(event.confidence) ? Number(event.confidence) : undefined,
         source: event.source,
+        // #3: execution-layer failover marker — the primary provider this call
+        // was degraded away from ('' when it ran on the primary).
+        degraded: event.degraded || '',
         error: event.error ? String(event.error).slice(0, 160) : '',
       })
     })
@@ -1066,7 +1080,7 @@ function modelsUrl(base) {
  * degradation in #39 (which is about the JEV judge itself being unreachable).
  */
 const BREAKER_THRESHOLD = 3
-const BREAKER_COOLDOWN_MS = 10 * 60 * 1000
+const BREAKER_COOLDOWN_MS = num(env('JEV_BREAKER_COOLDOWN_MS'), 10 * 60 * 1000)
 const gatewayBreakers = new Map()
 
 function breakerOf(provider) {
@@ -1099,6 +1113,62 @@ function breakerRecordFailure(provider) {
 
 /** Test seam: reset all breakers between cases. */
 function __resetBreakers() { gatewayBreakers.clear() }
+
+/**
+ * #3 execution-layer failover: try the primary provider, on failure degrade to
+ * the backup, honouring the circuit breaker. `makeCall(provider)` performs one
+ * attempt and returns whatever the caller needs (answer/binding/model).
+ *
+ * Returns:
+ *   { outcome, degradedFrom, cooldownSkip, cooldownMs, error }
+ *   - outcome: the makeCall result (primary or backup), or null if both failed
+ *   - degradedFrom: the provider that failed and was degraded away from ('' if none)
+ *   - cooldownSkip: provider skipped because it was cooling down ('' if none)
+ *   - error: set only when BOTH providers failed (caller surfaces call failed)
+ */
+async function executeWithFailover({ primary, backup, makeCall, onCooldown }) {
+  const cooldownMs = breakerCooldownMs(primary)
+  if (cooldownMs > 0) {
+    // Primary is cooling down: skip it WITHOUT spending a timeout (#3).
+    if (onCooldown) onCooldown(primary, cooldownMs)
+    try {
+      const outcome = await makeCall(backup)
+      breakerRecordSuccess(backup)
+      return { outcome, degradedFrom: '', cooldownSkip: primary, cooldownMs, error: null }
+    } catch (err) {
+      breakerRecordFailure(backup)
+      return { outcome: null, degradedFrom: '', cooldownSkip: primary, cooldownMs, error: err }
+    }
+  }
+  try {
+    const outcome = await makeCall(primary)
+    breakerRecordSuccess(primary)
+    return { outcome, degradedFrom: '', cooldownSkip: '', cooldownMs: 0, error: null }
+  } catch (err) {
+    // #3: an unconfigured gateway is a CONFIG problem, not a gateway failure.
+    // Degrading would just hit another unconfigured gateway and double the
+    // not-sent records, so surface it directly without failing over.
+    if (err && err.code === 'JEV_NOT_CONFIGURED') {
+      return { outcome: null, degradedFrom: '', cooldownSkip: '', cooldownMs: 0, error: err }
+    }
+    // #3: 4xx (unknown model id, unauthorized, bad params) is a CONFIG error, not a
+    // gateway outage — the backup would reject it too. Only degrade on real faults
+    // (network error, timeout, 5xx).
+    if (err && Number.isFinite(err.httpStatus) && err.httpStatus >= 400 && err.httpStatus < 500) {
+      return { outcome: null, degradedFrom: '', cooldownSkip: '', cooldownMs: 0, error: err }
+    }
+    breakerRecordFailure(primary)
+    // degrade to the backup and mark it (#3).
+    try {
+      const outcome = await makeCall(backup)
+      breakerRecordSuccess(backup)
+      return { outcome, degradedFrom: primary, cooldownSkip: '', cooldownMs: 0, error: null }
+    } catch (err2) {
+      breakerRecordFailure(backup)
+      return { outcome: null, degradedFrom: primary, cooldownSkip: '', cooldownMs: 0, error: err2 }
+    }
+  }
+}
 
 /* ------------------------------------------------- tiered timeouts (#3) */
 
@@ -1139,7 +1209,7 @@ function combineSignal(cfgTimeout, execSignal) {
 async function listGatewayModels(route, cfg2) {
   const url = modelsUrl(route.base)
   if (!url) return []
-  const link = combineSignal(cfg2.timeoutMs, undefined)
+  const link = combineSignal(timeoutFor('probe', cfg2), undefined)
   try {
     const res = await fetch(url, {
       headers: route.key ? { authorization: `Bearer ${route.key}` } : {},
@@ -1162,21 +1232,23 @@ async function chat(route, messages, opts, cfg, exec) {
     recordUsage({
       gateway: opts.provider,
       model: route.model,
-      tool: opts.tool || 'call',
+      tool: opts.tool || 'call', degraded: opts.degraded || '',
       ok: false,
       sent: false,
       status: 0,
       ms: 0,
       error: '未发出：没有配置网关地址',
     })
-    throw new Error(`no base URL configured for ${opts.provider}; set it in plugin settings or ${opts.provider.toUpperCase()}_BASE_URL`)
+    const notConfigured = new Error(`no base URL configured for ${opts.provider}; set it in plugin settings or ${opts.provider.toUpperCase()}_BASE_URL`)
+    notConfigured.code = 'JEV_NOT_CONFIGURED'
+    throw notConfigured
   }
   const temperature = Number.isFinite(opts.temperature) ? opts.temperature : cfg.temperature
 
   let startedAt = 0
   const send = async (keepTemperature) => {
     startedAt = Date.now()
-    const link = combineSignal(cfg.timeoutMs, exec?.signal)
+    const link = combineSignal(timeoutFor(opts.provider === 'kimi' ? 'decision' : 'execution', cfg), exec?.signal)
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -1211,7 +1283,7 @@ async function chat(route, messages, opts, cfg, exec) {
     recordUsage({
       gateway: opts.provider,
       model: route.model,
-      tool: opts.tool || 'call',
+      tool: opts.tool || 'call', degraded: opts.degraded || '',
       ok: false,
       status: res.status,
       ms: Date.now() - startedAt,
@@ -1225,7 +1297,9 @@ async function chat(route, messages, opts, cfg, exec) {
         ? `\n${opts.provider} 不认识模型 id「${route.model}」，可用模型 id 示例：${available.slice(0, 8).join(', ')}${available.length > 8 ? ` …（共 ${available.length} 个）` : ''}`
         : `\n${opts.provider} 不认识模型 id「${route.model}」；该网关没返回模型列表，去设置页点「测试连通」看真实 id。`
     }
-    throw new Error(detail)
+    const httpErr = new Error(detail)
+    httpErr.httpStatus = res.status
+    throw httpErr
   }
   let body
   try { body = JSON.parse(raw) } catch { throw new Error(`non-JSON response from ${opts.provider}: ${raw.slice(0, 300)}`) }
@@ -1236,7 +1310,7 @@ async function chat(route, messages, opts, cfg, exec) {
   recordUsage({
     gateway: opts.provider,
     model: route.model,
-    tool: opts.tool || 'call',
+    tool: opts.tool || 'call', degraded: opts.degraded || '',
     ok: true,
     answered: typeof text === 'string' && text.trim() !== '',
     status: res.status,
@@ -1293,13 +1367,13 @@ function emptyAnswerNote(answer) {
 async function dshChat(llm, binding, opts, cfg, exec) {
   if (!llm || typeof llm.prepareCall !== 'function') {
     recordUsage({
-      gateway: binding.key, model: binding.model, tool: opts.tool || 'call',
+      gateway: binding.key, model: binding.model, tool: opts.tool || 'call', degraded: opts.degraded || '',
       ok: false, sent: false, status: 0, ms: 0, error: '未发出：该宿主没有 llm 服务',
     })
     throw new Error('DSH model service (llm) is unavailable — switch the route to 直连 or configure a gateway')
   }
   const startedAt = Date.now()
-  const link = combineSignal(cfg.timeoutMs, exec && exec.signal)
+  const link = combineSignal(timeoutFor(binding.key === 'kimi' ? 'decision' : 'execution', cfg), exec && exec.signal)
   try {
     const maxTokens = opts.maxTokens || 1200
     const controls = { maxTokens }
@@ -1342,7 +1416,7 @@ async function dshChat(llm, binding, opts, cfg, exec) {
     const trimmed = text.trim()
     const reasoningTokens = reasoningChars > 0 ? Math.ceil(reasoningChars / 3) : 0
     recordUsage({
-      gateway: binding.key, model: binding.model, tool: opts.tool || 'call', ok: true,
+      gateway: binding.key, model: binding.model, tool: opts.tool || 'call', degraded: opts.degraded || '', ok: true,
       answered: trimmed !== '', status: 200,
       ms: Date.now() - startedAt, promptTokens: inputTokens, completionTokens: outputTokens,
     })
@@ -1357,7 +1431,7 @@ async function dshChat(llm, binding, opts, cfg, exec) {
     }
   } catch (err) {
     recordUsage({
-      gateway: binding.key, model: binding.model, tool: opts.tool || 'call', ok: false, status: 0,
+      gateway: binding.key, model: binding.model, tool: opts.tool || 'call', degraded: opts.degraded || '', ok: false, status: 0,
       ms: Date.now() - startedAt, error: shortError(err),
     })
     throw err
@@ -2102,25 +2176,57 @@ export function apply(ctx, config = {}) {
         }
 
         const forced = args.provider === 'kimi' || args.provider === 'dsf'
-        const selected = forced ? args.provider : routeFor(tier).key
-        const route = selected === 'kimi' ? cfg.kimi : cfg.dsf
+        const primaryProvider = forced ? args.provider : routeFor(tier).key
+        // #3: the failover chain. decision (kimi) degrades to dsf, execution (dsf) to kimi.
+        const backupProvider = primaryProvider === 'kimi' ? 'dsf' : 'kimi'
         // Two ways to run the routed work:
         //   dsh  — through DSH's own gateway, so the kimi/dsf keys here are unused
         //   direct — the plugin calls its own OpenAI-compatible gateway
         const useDsh = dshReady()
-        const binding = useDsh ? await dshResolve(selected) : null
-        const servedModel = useDsh ? `${binding.provider}/${binding.model}` : route.model
         const systemText = 'You are executing a task delegated by a chief-of-staff agent. Follow the task precisely and return a complete, self-contained answer.'
           + (mounted ? `\n\nWhere they apply, follow the skill instructions below. They are reference material, not a script to quote back.\n\n${mounted}` : '')
         const userText = args.context ? `Task:\n${task}\n\nContext:\n${args.context}` : task
-        const routedAt = Date.now()
-        try {
+        // #3: one attempt against a specific provider; returns everything we need.
+        const makeCall = async (provider) => {
+          const route = provider === 'kimi' ? cfg.kimi : cfg.dsf
+          const binding = useDsh ? await dshResolve(provider) : null
+          const servedModel = useDsh ? `${binding.provider}/${binding.model}` : route.model
+          const degraded = provider !== primaryProvider ? primaryProvider : ''
           const answer = useDsh
-            ? await dshChat(dshLlm(), binding, { system: systemText, user: userText, temperature: args.temperature, maxTokens: args.maxTokens, tool: 'call' }, cfg, exec)
+            ? await dshChat(dshLlm(), binding, { system: systemText, user: userText, temperature: args.temperature, maxTokens: args.maxTokens, tool: 'call', degraded }, cfg, exec)
             : await chat(route, [
               { role: 'system', content: systemText },
               { role: 'user', content: userText },
-            ], { provider: selected, tool: 'call', temperature: args.temperature, maxTokens: args.maxTokens }, cfg, exec)
+            ], { provider, tool: 'call', temperature: args.temperature, maxTokens: args.maxTokens, degraded }, cfg, exec)
+          return { answer, binding, servedModel, provider }
+        }
+        // #3: pre-declare safe fallbacks so the catch block never hits a TDZ when
+        // the failover itself throws before these are assigned.
+        let selected = primaryProvider
+        let binding = null
+        let servedModel = (primaryProvider === 'kimi' ? cfg.kimi : cfg.dsf).model
+        const routedAt = Date.now()
+        try {
+          // #3: circuit-breaker + failover. A cooling-down provider is skipped
+          // WITHOUT spending a timeout; a failed primary degrades to the backup.
+          const failover = await executeWithFailover({
+            primary: primaryProvider,
+            backup: backupProvider,
+            makeCall,
+            onCooldown: (provider, ms) => {
+              recordUsage({
+                gateway: provider, model: '', tool: 'call', ok: false, sent: false, kind: 'cooldown',
+                status: 0, ms: 0, error: `冷却中，跳过（剩 ${Math.ceil(ms / 60000)} 分钟）`,
+              })
+            },
+          })
+          if (failover.error || !failover.outcome) throw failover.error || new Error('both providers failed')
+          const answer = failover.outcome.answer
+          binding = failover.outcome.binding
+          servedModel = failover.outcome.servedModel
+          selected = failover.outcome.provider
+          const degradedFrom = failover.degradedFrom
+          const cooldownSkip = failover.cooldownSkip
           const emptyHint = answer.emptyNote || ''
           const followed = useDsh ? await dshFollowModel(binding) : false
           recordDecision({
@@ -2135,7 +2241,11 @@ export function apply(ctx, config = {}) {
             escalated,
             skillSource,
             skillError,
-            degraded: Boolean(judged && judged.degraded),
+            // #3: degraded is true for a judge-layer fallback (#39) OR an
+            // execution-layer failover away from the primary provider.
+            degraded: Boolean((judged && judged.degraded) || degradedFrom),
+            degradedFrom: degradedFrom || '',
+            cooldownSkip: cooldownSkip || '',
             error: judged && judged.degraded ? String(judged.error || '').slice(0, 160) : '',
             ms: Date.now() - routedAt,
             pt: answer.promptTokens || 0,
@@ -2148,6 +2258,8 @@ export function apply(ctx, config = {}) {
             model: servedModel,
             ...answer,
             note: (note || `${tier} tier via ${selected}`) + (useDsh ? ' · via DSH gateway' : ' · via plugin gateway')
+              + (degradedFrom ? ` · ${degradedFrom} 失败已降级到 ${selected}` : '')
+              + (cooldownSkip ? ` · ${cooldownSkip} 冷却中，直接走 ${selected}` : '')
               + (followed ? ` · DSH 选择器已切到 ${binding.model}` : '') + skillNote + emptyHint,
           })
         } catch (err) {
@@ -2373,7 +2485,7 @@ export function apply(ctx, config = {}) {
             const jevUrl = modelsUrl(cfg.jev.base)
             if (!jevUrl) lines.push('jev: NOT CONFIGURED (no base URL)')
             else {
-              const link = combineSignal(cfg.timeoutMs, exec?.signal)
+              const link = combineSignal(timeoutFor('probe', cfg), exec?.signal)
               try {
                 const res = await fetch(jevUrl, { headers: cfg.jev.key ? { authorization: `Bearer ${cfg.jev.key}` } : {}, signal: link.signal })
                 lines.push(`jev: HTTP ${res.status}`)
@@ -2399,7 +2511,7 @@ export function apply(ctx, config = {}) {
             lines.push(`${key}: NOT CONFIGURED (no base URL)`)
             continue
           }
-          const link = combineSignal(cfg.timeoutMs, exec?.signal)
+          const link = combineSignal(timeoutFor('probe', cfg), exec?.signal)
           const probeStartedAt = Date.now()
           try {
             const res = await fetch(url, {
@@ -2934,6 +3046,13 @@ export function apply(ctx, config = {}) {
           }
           patch.timeoutMs = Math.round(v)
         }
+        // #3: per-operation timeout overrides (probe / execution / decision / review).
+        for (const key of ['timeoutProbe', 'timeoutExecution', 'timeoutDecision', 'timeoutReview']) {
+          if (body[key] === undefined) continue
+          const v = Number(body[key])
+          if (!Number.isFinite(v) || v <= 0) { writeJson(res, 400, { ok: false, error: `${key} must be a positive number` }); return }
+          patch[key] = Math.round(v)
+        }
         if (typeof body.routeMode === 'string') {
           const mode = body.routeMode.trim().toLowerCase()
           if (mode !== 'dsh' && mode !== 'direct') { writeJson(res, 400, { ok: false, error: 'routeMode must be dsh or direct' }); return }
@@ -3017,6 +3136,12 @@ export function apply(ctx, config = {}) {
         const report = usageReport(Number.isFinite(asked) && asked > 0 ? Math.min(168, asked) : 24)
         // 看板的空态卡按 off/setup/ready 分流；unknown 由客户端在请求失败时自己产生。
         report.state = computeBridgeState(refresh(), report.recent[0])
+        // #3: expose each gateway's circuit-breaker cooldown so the panel can show
+        // a grey "cooling down · N min left" badge on the traffic card.
+        report.breakers = Object.fromEntries(['jev', 'kimi', 'dsf'].map((g) => {
+          const ms = breakerCooldownMs(g)
+          return [g, { coolingDown: ms > 0, cooldownMs: ms, minutesLeft: ms > 0 ? Math.ceil(ms / 60000) : 0 }]
+        }))
         // #41: judge-quality metrics — always for the whole machine, and for one
         // session when ?session= is given (panel shows "this session" vs "all").
         const usage = readUsage()
