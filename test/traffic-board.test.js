@@ -183,3 +183,108 @@ test('#41: unknown 会话标注为「未知会话」，绝不写成「本会话�
   assert.ok(text.includes('未知会话'), 'unknown 应标注为「未知会话」')
   assert.ok(!text.includes('本会话'), '绝不能把 unknown 写成「本会话」')
 })
+
+/* ---------- #18 三个图表细节：左侧刻度 / 午夜竖虚线+日期 / 「现在」标记 ---------- */
+
+function bootExports() {
+  const loaded = loadClient(reactPkgs)
+  applyClient(loaded)
+  const seam = loaded.exports.__test
+  assert.ok(seam, 'client 没有导出 __test 测试缝')
+  return seam
+}
+
+/** 24 个柱子的合成行：前 12 个 11/18，后 12 个 11/19（跨一次午夜）。 */
+function chartRows() {
+  const rows = []
+  for (let i = 0; i < 24; i++) {
+    rows.push({
+      label: `${pad(i)}:00`,
+      sub: i < 12 ? '11/18' : '11/19',
+      gateways: {
+        jev: { calls: 13, tokens: 10, fail: 0 },
+        kimi: { calls: 0, tokens: 0, fail: 0 },
+        dsf: { calls: 2, tokens: 5, fail: 0 },
+      },
+    })
+  }
+  return rows
+}
+
+test('#18: 柱状图补左侧刻度，读数不再靠猜归一化', { skip }, () => {
+  const { TrafficChart } = bootExports()
+  const html = render(reactPkgs, TrafficChart, { rows: chartRows() })
+  const text = visibleText(html)
+
+  // peak=13 → nice 上限 20；刻度应为 0/5/10/15/20，而不是把 13 顶到满格还说不出数字。
+  for (const tick of ['0', '5', '10', '15', '20']) {
+    assert.ok(text.includes(tick), `左侧刻度缺少 ${tick}：${text.slice(0, 200)}`)
+  }
+  // 刻度文字是贴左轴、右对齐的（text-anchor=end），不是横轴标签。
+  const endAnchored = (html.match(/text-anchor="end"/g) || []).length
+  assert.ok(endAnchored >= 5, `右对齐的刻度标签太少：${endAnchored}`)
+  // 纵轴：一条贴左侧刻度区（x=34）的实线，横轴基线也在。
+  assert.ok(/x1="34"[^>]*x2="34"/.test(html), '缺少纵轴')
+  assert.ok(/y1="158"[^>]*y2="158"/.test(html), '缺少横轴基线')
+})
+
+test('#18: 峰值只有 1 时柱子不再顶满全图（刻度下限 2）', { skip }, () => {
+  const { TrafficChart } = bootExports()
+  const rows = []
+  for (let i = 0; i < 24; i++) {
+    rows.push({
+      label: `${pad(i)}:00`,
+      sub: i < 12 ? '11/18' : '11/19',
+      gateways: {
+        jev: { calls: i === 5 ? 1 : 0, tokens: 0, fail: 0 },
+        kimi: { calls: 0, tokens: 0, fail: 0 },
+        dsf: { calls: 0, tokens: 0, fail: 0 },
+      },
+    })
+  }
+  const html = render(reactPkgs, TrafficChart, { rows })
+  const text = visibleText(html)
+  // 刻度 0/1/2：读者能看出最多只有 1 次，而不是以为「满格 = 很多次」。
+  assert.ok(text.includes('2') && text.includes('1') && text.includes('0'), `刻度应含 0/1/2：${text.slice(0, 160)}`)
+  const heights = [...html.matchAll(/<rect[^>]*height="([^"]+)"/g)]
+    .map((m) => Number(m[1]))
+    .filter((n) => n > 2)
+  assert.ok(heights.length > 0, '应有一根可见的柱子')
+  // plotHeight = 148，刻度上限 2 → 1 次调用 = 74 高，恰好半格。
+  assert.ok(Math.max(...heights) <= 75, `峰值 1 的柱高应 ≤ 半格（75），实际 ${Math.max(...heights)}`)
+})
+
+test('#18: 24h 跨午夜处有竖虚线 + 日期，最右有「现在」标记', { skip }, () => {
+  const { TrafficChart } = bootExports()
+  const html = render(reactPkgs, TrafficChart, { rows: chartRows() })
+  const text = visibleText(html)
+
+  // 午夜：行 12 从 11/18 切到 11/19，必须画竖虚线并把日期写出来（bucket.day 不再闲置）。
+  assert.ok(text.includes('11/19'), '午夜边界应写日期 11/19')
+  const dashed = [...html.matchAll(/<line[^>]*stroke-dasharray="[^"]*"[^>]*>/g)].map((m) => m[0])
+  assert.ok(dashed.length >= 2, `竖虚线至少 2 条（午夜 + 现在），实际 ${dashed.length}`)
+  for (const line of dashed) {
+    const x1 = /x1="([^"]+)"/.exec(line)
+    const x2 = /x2="([^"]+)"/.exec(line)
+    assert.equal(x1[1], x2[1], `虚线必须是竖的：${line}`)
+  }
+  // 「现在」：文字 + 一条贴右边界（x=720-26=694）的竖线。
+  assert.ok(text.includes('现在'), '图表缺少「现在」标记')
+  assert.ok(/x1="694"[^>]*x2="694"/.test(html), '「现在」竖线没有贴在最右边界')
+})
+
+test('#18: 稀疏时间线右端也标「现在」', { skip }, () => {
+  const { TrafficTimeline } = bootExports()
+  const data = {
+    recent: [
+      { t: new Date().toISOString(), g: 'jev', tool: 'judge', ok: true, kind: 'ok' },
+      { t: new Date().toISOString(), g: 'dsf', tool: 'call', ok: false, kind: 'fail', error: 'boom' },
+    ],
+  }
+  const html = render(reactPkgs, TrafficTimeline, { data })
+  const text = visibleText(html)
+  assert.ok(text.includes('调用时间线'), '时间线说明行')
+  assert.ok(text.includes('现在'), '时间线右端缺少「现在」标记')
+  const circles = (html.match(/<circle/g) || []).length
+  assert.equal(circles, 2, `每个调用一个点，实际 ${circles}`)
+})
