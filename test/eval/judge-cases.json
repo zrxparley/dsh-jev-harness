@@ -1,0 +1,168 @@
+{
+  "$comment": "JEV judge golden set (#10). 20 hand-labelled cases. Each: task -> expected tier + expected skill + difficulty. criteriaVersion pins the criteria wording these labels were written against; the criteria guard test fails if criteria.js version bumps without re-labelling this file. tier/skill are live dimensions today; difficulty is FORWARD-DECLARED for #38 (merged judge) and is NOT asserted until that issue lands — see test/eval/README.md. skill='none' means no catalog skill applies. skill ids MUST exist in the bundled catalog (skills.js, 39 skills); the eval harness asserts referential integrity.",
+  "criteriaVersion": "1.0.0",
+  "catalogSnapshot": "mattpocock/skills@5863806",
+  "skillCount": 39,
+  "cases": [
+    {
+      "id": "t01",
+      "task": "Review the diff since the last release tag and tell me whether this change is safe to ship.",
+      "expectTier": "decision",
+      "expectSkill": "engineering/code-review",
+      "difficulty": "normal",
+      "rationale": "Ship/no-ship is a risk + quality call (decision); code-review skill is the exact match."
+    },
+    {
+      "id": "t02",
+      "task": "Translate this error message into English: '数据库连接超时，请稍后重试'.",
+      "expectTier": "execution",
+      "expectSkill": "none",
+      "difficulty": "trivial",
+      "rationale": "Pure translation is mechanical (execution); no catalog skill covers translation."
+    },
+    {
+      "id": "t03",
+      "task": "Our p95 latency doubled after last night's deploy. Walk me through finding the regression.",
+      "expectTier": "decision",
+      "expectSkill": "engineering/diagnosing-bugs",
+      "difficulty": "hard",
+      "rationale": "Performance regression diagnosis is judgment-heavy (decision); diagnosing-bugs is the diagnosis loop skill."
+    },
+    {
+      "id": "t04",
+      "task": "Reformat this JSON with 2-space indentation and sort the keys alphabetically.",
+      "expectTier": "execution",
+      "expectSkill": "none",
+      "difficulty": "trivial",
+      "rationale": "Formatting is mechanical (execution); no skill needed."
+    },
+    {
+      "id": "t05",
+      "task": "We're choosing between Postgres and DynamoDB for a multi-tenant SaaS with spiky traffic. Help me decide.",
+      "expectTier": "decision",
+      "expectSkill": "none",
+      "difficulty": "hard",
+      "rationale": "Architecture trade-off (decision); no single catalog skill owns DB selection."
+    },
+    {
+      "id": "t06",
+      "task": "Implement the spec in tickets/012-user-auth.md, writing tests first.",
+      "expectTier": "execution",
+      "expectSkill": "engineering/tdd",
+      "difficulty": "normal",
+      "rationale": "Implementation is mechanical once spec exists (execution); 'tests first' routes to tdd skill."
+    },
+    {
+      "id": "t07",
+      "task": "Turn this brainstorming session into a written spec the team can build from.",
+      "expectTier": "execution",
+      "expectSkill": "engineering/to-spec",
+      "difficulty": "normal",
+      "rationale": "Transformation of conversation into a document (execution); to-spec is the exact skill."
+    },
+    {
+      "id": "t08",
+      "task": "Break this approved plan into a set of tracked tickets with owners.",
+      "expectTier": "execution",
+      "expectSkill": "engineering/to-tickets",
+      "difficulty": "normal",
+      "rationale": "Mechanical decomposition of a plan (execution); to-tickets skill matches."
+    },
+    {
+      "id": "t09",
+      "task": "Write the PR body for the branch I just pushed.",
+      "expectTier": "execution",
+      "expectSkill": "engineering/pr",
+      "difficulty": "trivial",
+      "rationale": "Generating a PR description is mechanical writing (execution); pr skill is exact."
+    },
+    {
+      "id": "t10",
+      "task": "Is our current module structure hiding too much behind shallow wrappers? Give me your read.",
+      "expectTier": "decision",
+      "expectSkill": "engineering/improve-codebase-architecture",
+      "difficulty": "normal",
+      "rationale": "Architecture quality judgment (decision); improve-codebase-architecture scans for deepening opportunities."
+    },
+    {
+      "id": "t11",
+      "task": "Extract every email address from this log file and list them deduplicated.",
+      "expectTier": "execution",
+      "expectSkill": "none",
+      "difficulty": "trivial",
+      "rationale": "Extraction is mechanical (execution); no skill needed."
+    },
+    {
+      "id": "t12",
+      "task": "Investigate whether our payment provider's webhook retries are idempotent, citing their official docs.",
+      "expectTier": "decision",
+      "expectSkill": "engineering/research",
+      "difficulty": "normal",
+      "rationale": "Primary-source investigation + a correctness judgment (decision); research skill captures findings against high-trust sources."
+    },
+    {
+      "id": "t13",
+      "task": "Set up Claude Code hooks so nobody can push --force to main.",
+      "expectTier": "execution",
+      "expectSkill": "misc/git-guardrails-claude-code",
+      "difficulty": "normal",
+      "rationale": "Configuration/setup is mechanical (execution); git-guardrails-claude-code is the exact skill."
+    },
+    {
+      "id": "t14",
+      "task": "Grill me on this migration plan until the weak spots show.",
+      "expectTier": "decision",
+      "expectSkill": "productivity/grilling",
+      "difficulty": "normal",
+      "rationale": "Probing a plan for weaknesses is evaluative (decision); grilling skill grills the user about a plan."
+    },
+    {
+      "id": "t15",
+      "task": "Migrate the test files from `as` casts to @total-typescript/shoehorn assertions.",
+      "expectTier": "execution",
+      "expectSkill": "misc/migrate-to-shoehorn",
+      "difficulty": "normal",
+      "rationale": "Mechanical codemod (execution); migrate-to-shoehorn is exact."
+    },
+    {
+      "id": "t16",
+      "task": "Summarise this conversation into a handoff doc so a fresh agent can pick it up cold.",
+      "expectTier": "execution",
+      "expectSkill": "productivity/handoff",
+      "difficulty": "normal",
+      "rationale": "Compaction/transformation of context (execution); handoff skill is exact."
+    },
+    {
+      "id": "t17",
+      "task": "Run a retrospective on the coding session we just finished.",
+      "expectTier": "decision",
+      "expectSkill": "engineering/retro",
+      "difficulty": "normal",
+      "rationale": "Retrospective is reflective evaluation (decision); retro skill matches."
+    },
+    {
+      "id": "t18",
+      "task": "Build a throwaway prototype to check whether a virtualised list fixes our scroll jank.",
+      "expectTier": "execution",
+      "expectSkill": "engineering/prototype",
+      "difficulty": "normal",
+      "rationale": "Building a throwaway to answer a design question is generative/execution; prototype skill is exact. Tier is the debatable one here — labelled execution because the deliverable is code, not a verdict."
+    },
+    {
+      "id": "t19",
+      "task": "New external issue just came in about a crash on the settings page. Walk it through triage.",
+      "expectTier": "execution",
+      "expectSkill": "engineering/triage",
+      "difficulty": "normal",
+      "rationale": "Moving an issue through a triage state machine is process execution; triage skill is exact."
+    },
+    {
+      "id": "t20",
+      "task": "Plan how we'd break this monolith into deep modules over the next quarter — more than one session can hold.",
+      "expectTier": "decision",
+      "expectSkill": "engineering/wayfinder",
+      "difficulty": "hard",
+      "rationale": "Long-horizon architecture planning is judgment (decision); wayfinder plans work larger than one session."
+    }
+  ]
+}
