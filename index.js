@@ -1272,12 +1272,28 @@ async function chat(route, messages, opts, cfg, exec) {
     }
   }
 
-  let { res, raw } = await send(true)
-  // Some reasoning models (kimi-k3 family) reject sampling parameters outright
-  // with "Parameter 'temperature'=0.2 is not supported". Retry once without it
-  // rather than surfacing a hard failure for a purely cosmetic parameter.
-  if (!res.ok && res.status === 400 && /temperature/i.test(raw)) {
-    ;({ res, raw } = await send(false))
+  let res, raw
+  try {
+    ;({ res, raw } = await send(true))
+    // Some reasoning models (kimi-k3 family) reject sampling parameters outright
+    // with "Parameter 'temperature'=0.2 is not supported". Retry once without it
+    // rather than surfacing a hard failure for a purely cosmetic parameter.
+    if (!res.ok && res.status === 400 && /temperature/i.test(raw)) {
+      ;({ res, raw } = await send(false))
+    }
+  } catch (err) {
+    // #34/#14: fetch reject 或超时（abort）也要落一条失败记录 —— 否则看板上
+    // 「失败凭空消失」。与 5xx 分支同一口径：每个真正发过的请求记一条。
+    recordUsage({
+      gateway: opts.provider,
+      model: route.model,
+      tool: opts.tool || 'call', degraded: opts.degraded || '',
+      ok: false,
+      status: 0,
+      ms: startedAt ? Date.now() - startedAt : 0,
+      error: shortError(err),
+    })
+    throw err
   }
   if (!res.ok) {
     recordUsage({
@@ -1302,7 +1318,21 @@ async function chat(route, messages, opts, cfg, exec) {
     throw httpErr
   }
   let body
-  try { body = JSON.parse(raw) } catch { throw new Error(`non-JSON response from ${opts.provider}: ${raw.slice(0, 300)}`) }
+  try {
+    body = JSON.parse(raw)
+  } catch {
+    // 200 但正文不是 JSON（例如代理回了 <html>502</html>）：这不是成功，落失败记录。
+    recordUsage({
+      gateway: opts.provider,
+      model: route.model,
+      tool: opts.tool || 'call', degraded: opts.degraded || '',
+      ok: false,
+      status: res.status,
+      ms: startedAt ? Date.now() - startedAt : 0,
+      error: shortError(new Error(`non-JSON response from ${opts.provider}: ${raw.slice(0, 160)}`)),
+    })
+    throw new Error(`non-JSON response from ${opts.provider}: ${raw.slice(0, 300)}`)
+  }
   const usageTotals = body?.usage || {}
   const message = body?.choices?.[0]?.message || {}
   const text = message.content
@@ -3004,6 +3034,7 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         writeJson(res, 200, await statusPayload())
       },
     },

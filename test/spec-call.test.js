@@ -200,45 +200,64 @@ test('#34 T23: 只有 config 提供 baseUrl 时，/save 之后 baseFromSettings 
   }
 })
 
-test('#34 T21 现状记录：POST /status 目前不是 405（#34 期望 405，待裁定）', async () => {
+test('#34 T21: POST /status 405（#34 期望，已修）', async () => {
   const home = makeHome('spec-t21-post')
   writeStore(home)
   const stub = stubFetch(() => undefined)
   try {
     const { routes } = await boot({ home })
     const postStatus = await callRoute(routes, STATUS, { method: 'POST', url: STATUS, body: {} })
-    // 事实：/status 路由没有 method 守卫，POST 也会返回 200。
-    // #34 的 T21 期望 405 —— 已报 Chief，等裁定后改这里或改实现。
-    assert.equal(postStatus.status, 200, '当前实现：POST /status 返回 200（与 #34 期望不符，待裁定）')
-    assert.ok(postStatus.body && postStatus.body.ok === true)
+    assert.equal(postStatus.status, 405, '/status 只接受 GET')
+    assert.equal(postStatus.body.ok, false)
+    const getStatus = await callRoute(routes, STATUS, { url: STATUS })
+    assert.equal(getStatus.status, 200, 'GET 仍然正常')
   } finally {
     stub.restore(); removeHome(home)
   }
 })
 
-test('#34 T15/T16 现状记录：非 JSON 与 fetch reject 目前只返回 ok:false，不记 fail', async () => {
-  // 这两条是 #34 期望「ok:false + fail+1」，实测只有 ok:false。
-  // 按 Chief 的规矩：这里记录当前事实，不写成通过，也不顺手改行为。
-  const cases = [
-    ['非 JSON', (url) => (String(url).includes('/chat/completions') ? textResponse('<html>502</html>', 200) : undefined)],
-    ['fetch reject', (url) => { if (String(url).includes('/chat/completions')) throw new Error('ECONNRESET boom'); return undefined }],
-  ]
-  for (const [name, handler] of cases) {
-    const home = makeHome(`spec-t15-${name.replace(/\W+/g, '')}`)
-    writeStore(home)
-    const stub = stubFetch(handler)
-    try {
-      const { tools, routes } = await boot({ home })
-      const out = await tools.get('harness_call').execute({ task: '整理成列表', tier: 'execution', skill: 'off' }, {})
-      assert.equal(out.ok, false, `${name}：工具返回 ok:false`)
-      assert.match(String(out.note), /call failed/, `${name}：note 要带失败原因`)
-      const stats = (await callRoute(routes, STATS, { url: `${STATS}?hours=24` })).body
-      const fails = Object.values(stats.totals).reduce((sum, entry) => sum + entry.fail, 0)
-      // 事实：目前是 0。#34 期望 1 —— 已报 Chief，等裁定后改这里或改实现。
-      assert.equal(fails, 0, `${name}：当前 fail 计数为 0（与 #34 期望不符，待裁定）`)
-      assert.equal(stats.recent.length, 0, `${name}：账本里没有这条失败`)
-    } finally {
-      stub.restore(); removeHome(home)
+test('#34 T15: 网关回非 JSON（200 + <html>502</html>）→ ok:false 且账本记失败', async () => {
+  const home = makeHome('spec-t15')
+  writeStore(home)
+  const stub = stubFetch((url) => (String(url).includes('/chat/completions') ? textResponse('<html>502</html>', 200) : undefined))
+  try {
+    const { tools, routes } = await boot({ home })
+    const out = await tools.get('harness_call').execute({ task: '整理成列表', tier: 'execution', skill: 'off' }, {})
+    assert.equal(out.ok, false)
+    assert.match(String(out.note), /non-JSON response/)
+    const stats = (await callRoute(routes, STATS, { url: `${STATS}?hours=24` })).body
+    const fails = Object.values(stats.totals).reduce((sum, entry) => sum + entry.fail, 0)
+    // 主备各试一次（#3 降级链），每次真正发出去的请求各记一条失败。
+    assert.equal(fails, 2, `失败必须可见（主备各 1 条），实际 ${fails}`)
+    assert.equal(stats.recent.length, 2, '两条失败都要出现在 recent 里')
+    for (const row of stats.recent) {
+      assert.equal(row.ok, false)
+      assert.match(String(row.error), /non-JSON response/, `失败记录要带 error 原文：${row.error}`)
     }
+  } finally {
+    stub.restore(); removeHome(home)
+  }
+})
+
+test('#34 T16: 执行层 fetch reject → ok:false 且账本记失败并带原文', async () => {
+  const home = makeHome('spec-t16')
+  writeStore(home)
+  const stub = stubFetch((url) => {
+    if (String(url).includes('/chat/completions')) throw new Error('ECONNRESET boom')
+    return undefined
+  })
+  try {
+    const { tools, routes } = await boot({ home })
+    const out = await tools.get('harness_call').execute({ task: '整理成列表', tier: 'execution', skill: 'off' }, {})
+    assert.equal(out.ok, false)
+    assert.match(String(out.note), /ECONNRESET boom/, 'note 要带网络错误原文')
+    const stats = (await callRoute(routes, STATS, { url: `${STATS}?hours=24` })).body
+    const fails = Object.values(stats.totals).reduce((sum, entry) => sum + entry.fail, 0)
+    assert.equal(fails, 2, `失败必须可见（主备各 1 条），实际 ${fails}`)
+    assert.equal(stats.recent.length, 2)
+    assert.ok(stats.recent.every((row) => /ECONNRESET boom/.test(String(row.error))), '每条都要带原文')
+    assert.ok(stats.recent.every((row) => row.status === 0), '状态 0 = 发出去了但没拿到响应，不伪造成 200')
+  } finally {
+    stub.restore(); removeHome(home)
   }
 })
