@@ -37,7 +37,10 @@ test/
   usage-metrics.test.js     未发出 / 无回答 / 本地日键 / avgMs 排除 probe / DST（#14）
   traffic-empty.test.js     骨架首帧 / 三选一空态 / 锚点行 / 旧文案消失（#15）
   panel-boundary.test.js    抛错出卡片 / 诊断信息 / 重新加载恢复（#16）
-  entry-convergence.test.js 单一入口 / layout 跳转 / 表单只一次 / setup 隐藏刷新（#17）
+  entry-convergence.test.js 单一入口 / layout 跳转 / 表单只一次 / setup 隐藏刷新 / 状态广播（#17）
+
+> 已知未做（#17）：面板首屏的整块顺序重排（状态头 → 摘要 → 最近调用 → 看板 → 高级设置）没有动，
+> 只做了「setup 时隐藏技能库与刷新按钮」。验收四条不含重排，留作后续。
   release-pack.test.js      按 files 打包/解包后的客户端挂载 smoke（#27）
   usage-hour.test.js        记账与 /stats 小时粒度
   usage-day.test.js         7 天视图读日汇总（v1.6.0 事故回归）

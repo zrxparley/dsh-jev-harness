@@ -12,7 +12,9 @@ import assert from 'node:assert/strict'
 import {
   applyClient, findSlot, loadClient, render, requireReactOrSkip, visibleText,
 } from './helpers/client.js'
-import { jsonResponse, stubFetch } from './helpers/harness.js'
+import fs from 'node:fs'
+import path from 'node:path'
+import { REPO, jsonResponse, stubFetch } from './helpers/harness.js'
 
 const { pkgs: reactPkgs, skip } = requireReactOrSkip()
 
@@ -81,6 +83,53 @@ test('完整表单只在主面板出现一次；插件卡不重复', { skip }, (
   } finally {
     client.stub.restore()
   }
+})
+
+test('开关广播：publish 同步触达订阅者，退订后不再收到', { skip }, () => {
+  const client = bootClient()
+  try {
+    const api = client.loaded.exports.__test
+    const seen = []
+    const off = api.subscribeBridgeState((status) => seen.push(status.state))
+    api.publishBridgeState({ state: 'off' })
+    assert.deepEqual(seen, ['off'], 'publish 必须同步送达，不等定时器')
+    off()
+    api.publishBridgeState({ state: 'ready' })
+    assert.deepEqual(seen, ['off'], '退订后不该再收到')
+  } finally {
+    client.stub.restore()
+  }
+})
+
+test('插件卡 toggle 后，订阅方在 promise resolve 前就拿到新状态', { skip }, async () => {
+  const home = await import('./helpers/harness.js')
+  const stub = home.stubFetch((url) => {
+    if (url === '/api/jev-harness/token') return home.jsonResponse({ ok: true, token: 'a'.repeat(64) })
+    if (url === '/api/jev-harness/toggle') return home.jsonResponse({ ok: true, enabled: false, state: 'off', gateways: {}, skills: {} })
+    if (url === '/api/jev-harness/status') return home.jsonResponse({ ok: true, state: 'off', enabled: false, gateways: {}, skills: {} })
+    return undefined
+  })
+  const loaded = loadClient(reactPkgs, { fetch: globalThis.fetch })
+  const applied = applyClient(loaded)
+  try {
+    const api = loaded.exports.__test
+    const order = []
+    const off = api.subscribeBridgeState((status) => order.push(`listener:${status.state}`))
+    const status = await api.setBridgeEnabled(false)
+    order.push('caller-after-await')
+    assert.equal(status.state, 'off')
+    assert.deepEqual(order, ['listener:off', 'caller-after-await'], '订阅方必须在同一个 tick 内更新，而不是等轮询')
+    off()
+    assert.ok(applied.registrations.length >= 5)
+  } finally {
+    stub.restore()
+  }
+})
+
+test('三个入口都订阅了同一个状态源', () => {
+  const source = fs.readFileSync(path.join(REPO, 'lib', 'client.js'), 'utf8')
+  const uses = (source.match(/subscribeBridgeState\(/g) || []).length
+  assert.ok(uses >= 4, `定义 + 三个入口订阅至少 4 处，实际 ${uses}`)
 })
 
 test('未配置网关（setup）时首屏看不到「刷新技能目录」', { skip }, () => {
