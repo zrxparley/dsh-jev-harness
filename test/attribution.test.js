@@ -66,6 +66,13 @@ test('#23: 归属文案——jev 显示 Kimi/Flash，非 jev 是琥珀「未经 
 
   const empty = roundAttribution({ scope: { filtered: true }, decisions: [] })
   assert.equal(empty.tone, 'warn', '本会话还没走过 JEV 也是琥珀')
+  assert.match(empty.text, /^本轮：/, '空记录态也要带「本轮：」前缀')
+
+  // 50ms 以下不显示 0.0s（四舍五入会骗人）
+  const tooFast = roundAttribution({ scope: { filtered: true }, decisions: [{ source: 'jev', tier: 'execution', provider: 'dsf', ok: true, ms: 12 }] })
+  assert.equal(tooFast.detail, '', 'ms<50 不显示 0.0s')
+  const fast = roundAttribution({ scope: { filtered: true }, decisions: [{ source: 'jev', tier: 'execution', provider: 'dsf', ok: true, ms: 50 }] })
+  assert.equal(fast.detail, ' · 0.1s', '刚好 50ms 显示 0.1s')
 
   const global = roundAttribution({ scope: { filtered: false }, decisions: [{ source: 'jev', provider: 'kimi', tier: 'decision', ok: true }] })
   assert.equal(global.tone, 'ok')
