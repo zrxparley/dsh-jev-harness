@@ -234,6 +234,17 @@ function bridgeAuthorized(req) {
   try { return timingSafeEqual(expected, actual) } catch { return false }
 }
 
+/**
+ * One definition of the bridge state shared by /status and /stats (#13/#15):
+ * off → setup → degraded → ready.
+ */
+function computeBridgeState(live, lastCall) {
+  if (!live || !live.enabled) return 'off'
+  if (!live.kimi || !live.kimi.base || !live.dsf || !live.dsf.base) return 'setup'
+  if (lastCall && lastCall.ok === false) return 'degraded'
+  return 'ready'
+}
+
 function usagePath() {
   const home = String(process.env.DSH_HOME || '').trim() || path.join(os.homedir(), '.dsh')
   return path.join(home, 'jev-harness-usage.json')
@@ -1923,16 +1934,9 @@ export function apply(ctx, config = {}) {
     })
     // Honest state for the client (#13). The client must render this, never
     // infer from `enabled`: a fresh install is enabled but cannot serve.
-    const configured = Boolean(live.kimi.base) && Boolean(live.dsf.base)
     const recent = readUsage().recent
     const lastCall = recent.length ? recent[recent.length - 1] : null
-    const state = !live.enabled
-      ? 'off'
-      : !configured
-        ? 'setup'
-        : lastCall && lastCall.ok === false
-          ? 'degraded'
-          : 'ready'
+    const state = computeBridgeState(live, lastCall)
 
     return {
       ok: true,
@@ -2263,7 +2267,10 @@ export function apply(ctx, config = {}) {
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
         if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         const asked = Number(new URL(req.url || '/api/jev-harness/stats', 'http://127.0.0.1').searchParams.get('hours'))
-        writeJson(res, 200, usageReport(Number.isFinite(asked) && asked > 0 ? Math.min(168, asked) : 24))
+        const report = usageReport(Number.isFinite(asked) && asked > 0 ? Math.min(168, asked) : 24)
+        // 看板的空态卡按 off/setup/ready 分流；unknown 由客户端在请求失败时自己产生。
+        report.state = computeBridgeState(refresh(), report.recent[0])
+        writeJson(res, 200, report)
       },
     },
     {
