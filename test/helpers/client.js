@@ -37,6 +37,23 @@ export const REACT_MISSING =
   'react / react-dom 未解析到：本机应存在 <home>/.dsh/profiles/desktop/node_modules，CI 里由 devDependencies 提供'
 
 /**
+ * 渲染用例的环境闸门。
+ *
+ * 缺 react 时**默认让整个测试文件失败**，而不是安静 skip —— 否则一份装不上依赖的
+ * CI 会显示全绿，而渲染断言其实一条都没跑。只有在确实没有 react 的环境里
+ * （例如离线手工排查）显式设 JEV_ALLOW_NO_REACT=1 才降级成 skip，并打印原因。
+ */
+export function requireReactOrSkip() {
+  const pkgs = resolveReact()
+  if (pkgs) return { pkgs, skip: false }
+  if (process.env.JEV_ALLOW_NO_REACT === '1') return { pkgs: null, skip: REACT_MISSING }
+  throw new Error(
+    `${REACT_MISSING}。渲染用例不允许静默跳过：用 JEV_REACT_DIR 指向含 react 的 node_modules，` +
+    '或在确实取不到 react 的环境里显式设 JEV_ALLOW_NO_REACT=1（会打印 skip 原因）',
+  )
+}
+
+/**
  * 在沙箱里执行 lib/client.js，返回 { id, exports }。
  * 沙箱只给 window.__ModuleLoader__ / console / fetch / 定时器；
  * fetch 必须是测试已装好的 stub，否则会走真网络。

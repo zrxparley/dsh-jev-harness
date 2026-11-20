@@ -8,12 +8,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  REACT_MISSING, applyClient, findSlot, loadClient, render, resolveReact, visibleText,
+  applyClient, findSlot, loadClient, render, requireReactOrSkip, visibleText,
 } from './helpers/client.js'
 import { readFixture } from './helpers/harness.js'
 
-const reactPkgs = resolveReact()
-const skip = reactPkgs ? false : REACT_MISSING
+const { pkgs: reactPkgs, skip } = requireReactOrSkip()
 const fixture = readFixture('traffic-stats.json')
 
 const pad = (n) => String(n).padStart(2, '0')

@@ -41,4 +41,6 @@ test/
 1. **失败必须让进程非 0 退出。** 全部用 `node:assert`，不写 `allOk && exit 0` 这种假绿。
 2. **不碰真实 `~/.dsh`。** 每个用例 `mkdtemp` 一份临时 `DSH_HOME`，跑完删掉；测试里没有写死的绝对路径。
 3. **不发真实网络请求。** `helpers/harness.js` 的 `stubFetch` 命中不到就抛错，所以漏 stub 会直接变红。
-   react 从本机 DSH desktop profile 解析；CI 里由 `devDependencies` 提供，解析不到时渲染类用例显式 skip 并打印原因。
+   react 从本机 DSH desktop profile 解析；CI 里由 `devDependencies` 提供。
+   **解析不到时渲染用例默认让文件失败**，不允许静默 skip（否则缺依赖会伪装成全绿）。
+   确实没有 react 的环境（离线手工排查）要显式 `JEV_ALLOW_NO_REACT=1`，此时会打印 skip 原因。
