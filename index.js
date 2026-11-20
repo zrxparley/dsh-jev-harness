@@ -36,6 +36,26 @@ const PACKAGE_VERSION = (() => {
   }
 })()
 
+// #20: host-side strings use the same locale tables as the client. Chinese is
+// the default for older hosts without a locale service; apply() binds the host
+// locale when one is available.
+const DEFAULT_MESSAGES = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(new URL('./locale/zh.json', import.meta.url), 'utf8'))
+  } catch {
+    return {}
+  }
+})()
+let __jevLocale = (key) => DEFAULT_MESSAGES[key] || key
+
+function T(key, fallback) {
+  try {
+    const value = __jevLocale(key)
+    if (typeof value === 'string' && value && value !== key) return value
+  } catch { /* use the English fallback below */ }
+  return fallback !== undefined ? fallback : key
+}
+
 export const name = 'jev-harness'
 export const inject = ['tools']
 
@@ -73,12 +93,13 @@ const STORE_FIELDS = [
   'timeoutMs',
   'timeoutProbe', 'timeoutExecution', 'timeoutDecision', 'timeoutReview',
   'historyAuto', 'historyTurns', 'historyMaxChars',
+  'budgetDailyTokens',
 ]
 
 /** Booleans are stored as real JSON booleans, not strings. */
 const STORE_BOOLEANS = new Set(['enabled', 'skillsAuto', 'followModel', 'historyAuto'])
 // #4: numeric store fields must survive readStore (otherwise the threshold is dropped).
-const STORE_NUMBERS = new Set(['lowConfidenceThreshold', 'judgeTimeoutMs', 'timeoutMs', 'timeoutProbe', 'timeoutExecution', 'timeoutDecision', 'timeoutReview', 'historyTurns', 'historyMaxChars'])
+const STORE_NUMBERS = new Set(['lowConfidenceThreshold', 'judgeTimeoutMs', 'timeoutMs', 'timeoutProbe', 'timeoutExecution', 'timeoutDecision', 'timeoutReview', 'historyTurns', 'historyMaxChars', 'budgetDailyTokens'])
 
 function truthy(value, fallback) {
   if (typeof value === 'boolean') return value
@@ -332,6 +353,9 @@ function resolveConfig(config = {}, store = readStore()) {
     // /save takes effect on the next call's combineSignal (the tool-REGISTRATION
     // timeout is a separate snapshot; see the reload notice in /save).
     timeoutMs: num(store.timeoutMs !== undefined ? store.timeoutMs : c.timeoutMs, 120000),
+    // #8: per-session daily token budget. 0 = unlimited; a positive value refuses
+    // BEFORE spending, never silently charging past the cap.
+    budgetDailyTokens: Math.max(0, Math.round(num(store.budgetDailyTokens !== undefined ? store.budgetDailyTokens : c.budgetDailyTokens, 0))),
     // #2: auto conversation history for the adapter. auto = cap to the last N
     // turns within a char budget; off = pass the raw options.messages through.
     // History is used only for inference — never written to disk or the ledger.
@@ -723,6 +747,23 @@ function sanitizeProbabilities(raw) {
     kept[String(key).slice(0, 24)] = n
   }
   return Object.keys(kept).length ? kept : undefined
+}
+
+/**
+ * #8: 单个会话「今天」用掉多少 tokens（prompt + completion）。
+ * 按本地日比较（不是 ISO 字符串前 10 位），否则跨时区/跨午夜会算错。
+ * 拿不到 session 的调用统一进 'unknown' 桶 —— 不许变成「无限制」。
+ */
+function dailyTokensUsed(sessionId) {
+  const today = localDayKey(new Date())
+  const usage = readUsage()
+  let total = 0
+  for (const d of usage.decisions || []) {
+    if (!d || d.session !== sessionId) continue
+    if (localDayKey(new Date(d.t)) !== today) continue
+    total += (Number(d.pt) || 0) + (Number(d.ct) || 0)
+  }
+  return total
 }
 
 function recordDecision(entry) {
@@ -1765,6 +1806,11 @@ function render(title) {
 export function apply(ctx, config = {}) {
   let cfg = resolveConfig(config)
 
+  try {
+    const locale = ctx.locale || ctx.get('locale')
+    if (locale && typeof locale.bind === 'function') __jevLocale = locale.bind('jev-harness')
+  } catch { /* 老宿主没有 locale 服务，保留中文默认表 */ }
+
   // #9: 宿主有 credentials 就用它；没有就退回明文 JSON 并在 /status 标注降级原因。
   try {
     const svc = ctx.get('credentials')
@@ -2434,6 +2480,19 @@ export function apply(ctx, config = {}) {
         if (!cfg.enabled) return result({ note: DISABLED_NOTE })
         const task = String(args.task || '').trim()
         if (!task) return result({ note: 'task must be a non-empty string' })
+        // #8: per-session daily token budget. Refuse BEFORE spending — never
+        // silently keep charging past the cap. 0 = unlimited.
+        if (cfg.budgetDailyTokens > 0) {
+          const budgetSession = String((exec && (exec.sessionId || (exec.session && exec.session.id))) || 'unknown')
+          const usedToday = dailyTokensUsed(budgetSession)
+          if (usedToday >= cfg.budgetDailyTokens) {
+            return result({
+              ok: false,
+              note: `超出每日 token 预算上限：本会话今日已用 ${usedToday} tokens（上限 ${cfg.budgetDailyTokens}）。请明天再来，或在面板调高每日预算。`,
+              budget: { session: budgetSession, used: usedToday, limit: cfg.budgetDailyTokens },
+            })
+          }
+        }
         const askedTier = args.tier === 'decision' || args.tier === 'execution' ? args.tier : 'auto'
         let tier = askedTier
         let note = ''
@@ -3148,6 +3207,7 @@ export function apply(ctx, config = {}) {
       lowConfidenceThreshold: live.lowConfidenceThreshold,
       // #2: history config surfaced for the panel's auto-context switch + turn cap.
       history: { auto: live.history.auto, turns: live.history.turns, maxChars: live.history.maxChars },
+      budgetDailyTokens: live.budgetDailyTokens,
       // #39: judge timeout is separate from the 120s generation timeout.
       judgeTimeoutMs: live.judgeTimeoutMs,
       timeoutMs: live.timeoutMs,
@@ -3390,7 +3450,7 @@ export function apply(ctx, config = {}) {
       path: '/api/jev-harness/token',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
-        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
         // Bootstrap 是整条链路唯一的软点：拿得到它的进程也就拿得到 token。
         // 见 BRIDGE_TOKEN 注释里的诚实边界。
         writeJson(res, 200, { ok: true, token: BRIDGE_TOKEN })
@@ -3402,7 +3462,7 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
         const payload = await statusPayload()
         payload.selfCheck = selfCheckPayload()
         payload.credentialStorage = { ...credentialState }
@@ -3415,7 +3475,7 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
         // #9: 幂等迁移。重复执行不会覆盖已存在的凭据（hydrate 里有 alreadyStored 判断）。
         await credentialReady.catch(() => {})
         const state = await hydrateCredentials()
@@ -3429,7 +3489,7 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
         const body = await readJsonBody(req, 4096) || {}
         // #9: 擦除旧明文必须由用户显式确认，绝不自动执行。
         if (body.confirm !== true) {
@@ -3475,7 +3535,7 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
         // #7: 客户端 apply() 把 slot 注册结果上报到这里；面板白屏时 /status 仍能说出哪一格坏了。
         const body = await readJsonBody(req, 16384)
         if (!body || typeof body !== 'object' || !body.slots || typeof body.slots !== 'object') {
@@ -3492,7 +3552,7 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
         const body = await readJsonBody(req)
         if (!body || typeof body !== 'object') { writeJson(res, 400, { ok: false, error: 'malformed JSON body' }); return }
         const patch = {}
@@ -3513,6 +3573,15 @@ export function apply(ctx, config = {}) {
           patch.historyMaxChars = Math.round(v)
         }
         // #4: accept the judge escalation threshold (0-1 number).
+        // #8: daily token budget per session (0 = unlimited).
+        if (body.budgetDailyTokens !== undefined) {
+          const v = Number(body.budgetDailyTokens)
+          if (!Number.isFinite(v) || v < 0 || v > 100000000) {
+            writeJson(res, 400, { ok: false, error: 'budgetDailyTokens must be a number between 0 and 100000000' })
+            return
+          }
+          patch.budgetDailyTokens = Math.round(v)
+        }
         if (body.lowConfidenceThreshold !== undefined) {
           const v = Number(body.lowConfidenceThreshold)
           if (!Number.isFinite(v) || v < 0 || v > 1) { writeJson(res, 400, { ok: false, error: 'lowConfidenceThreshold must be a number between 0 and 1' }); return }
@@ -3585,7 +3654,7 @@ path: '/api/jev-harness/export',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local-only' }); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
         const params = new URL(req.url || '/api/jev-harness/export', 'http://127.0.0.1').searchParams
         const wantSession = params.get('session') || ''
         const usage = readUsage()
@@ -3609,7 +3678,7 @@ path: '/api/jev-harness/export',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
         const body = await readJsonBody(req)
         if (!body || typeof body !== 'object') { writeJson(res, 400, { ok: false, error: 'malformed JSON body' }); return }
         const flag = truthy(body.enabled, undefined)
@@ -3629,7 +3698,7 @@ path: '/api/jev-harness/export',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
         refresh()
         try {
           const synced = await refreshSkills(cfg)
@@ -3645,7 +3714,7 @@ path: '/api/jev-harness/export',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
         const params = new URL(req.url || '/api/jev-harness/stats', 'http://127.0.0.1').searchParams
         const asked = Number(params.get('hours'))
         const report = usageReport(Number.isFinite(asked) && asked > 0 ? Math.min(168, asked) : 24)
@@ -3735,7 +3804,7 @@ path: '/api/jev-harness/export',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
         const url = new URL(req.url || '/', 'http://127.0.0.1')
         const provider = String(url.searchParams.get('provider') || '').trim()
         const llm = dshLlm()
@@ -3759,7 +3828,7 @@ path: '/api/jev-harness/export',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
         refresh()
         const body = await readJsonBody(req, 16384) || {}
         const wanted = typeof body.gateway === 'string' && ['jev', 'kimi', 'dsf'].includes(body.gateway) ? body.gateway : ''
