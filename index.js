@@ -588,6 +588,8 @@ function recordDecision(entry) {
         skill: entry.skill || 'none',  // #4: distinguish 'judged none' from 'not asked' — never an ambiguous empty string
         skill2: entry.skill2 || '',      // #11: second mounted skill id ('' if only one)
         skillBytes: Math.round(entry.skillBytes || 0),  // #11: total bytes of mounted skill bodies
+        skill1Bytes: Math.round(entry.skill1Bytes || 0),  // #11 fix: bytes of the PRIMARY skill only
+        skill2Bytes: Math.round(entry.skill2Bytes || 0),  // #11 fix: bytes of the SECOND skill only
         // #39: tier degradation and skill degradation are separate facts.
         skillSource: entry.skillSource || '',
         skillError: entry.skillError ? String(entry.skillError).slice(0, 160) : '',
@@ -890,6 +892,39 @@ function heuristicTier(task) {
  *
  * All side effects are injected so the whole adapter is testable offline.
  */
+/**
+ * #2: bound the conversation history handed to the routed model. Keeps the
+ * LAST `turns` user/assistant exchanges and at most `maxChars` characters of
+ * text, so a long session never dumps its whole history (and its cost) into
+ * every call. Any system messages are preserved. Returns a NEW array — the
+ * input is never mutated, and nothing here is written to disk or the ledger.
+ */
+function capHistory(messages, turns = 6, maxChars = 8000) {
+  const list = Array.isArray(messages) ? messages : []
+  const system = list.filter(m => m && m.role === 'system')
+  const rest = list.filter(m => m && m.role !== 'system')
+  // one "turn" = a user message plus whatever follows it up to the next user.
+  const userIdx = []
+  for (let i = 0; i < rest.length; i++) if (rest[i] && rest[i].role === 'user') userIdx.push(i)
+  const startIdx = userIdx.length > turns ? userIdx[userIdx.length - turns - 1] + 1 : 0
+  let kept = rest.slice(startIdx)
+  // enforce the char budget from the newest end backwards.
+  const textOf = (m) => typeof m.content === 'string' ? m.content
+    : Array.isArray(m.content) ? m.content.filter(p => p && p.type === 'text').map(p => p.text || '').join('\n') : ''
+  let total = kept.reduce((sum, m) => sum + textOf(m).length, 0)
+  while (total > maxChars && kept.length > 1) {
+    total -= textOf(kept[0]).length
+    kept = kept.slice(1)
+  }
+  // final hard trim on the oldest remaining message if a single one is over budget.
+  if (total > maxChars && kept.length === 1) {
+    const only = kept[0]
+    const text = textOf(only).slice(0, maxChars)
+    kept = [{ ...only, content: text }]
+  }
+  return [...system, ...kept]
+}
+
 export function createJevAdapter(deps) {
   const {
     llm, decide, resolveBinding, fallbackBinding,
@@ -1786,6 +1821,11 @@ export function apply(ctx, config = {}) {
    * Candidates always come from the slimmed top-8 set, never the whole catalog.
    */
   function selectSecondSkill(primaryId, skillAns, task) {
+    // #11 fix (Verifier): the second skill must come from THIS ROUND's slimmed
+    // candidate set (slimSkills top-8), not merely exist in the catalog. A judge
+    // that returns an id outside the slim set must NOT be mounted, or #38's
+    // slimming would be bypassed.
+    const candidates = new Set(slimSkills(task, 8).map(s => s.id))
     const probs = skillAns && skillAns.probabilities
     if (probs && typeof probs === 'object') {
       let best = null
@@ -1793,14 +1833,16 @@ export function apply(ctx, config = {}) {
       for (const [id, p] of Object.entries(probs)) {
         const prob = Number(p)
         if (!Number.isFinite(prob) || id === primaryId || id === SKILL_NONE) continue
+        if (!candidates.has(id)) continue  // outside this round's slim set -> never mount
         if (prob >= 0.4 && prob > bestP && skillById(id)) { best = id; bestP = prob }
       }
       if (best) return best
     }
-    // Fallback: next-best local keyword score, excluding the primary.
+    // Fallback: next-best local keyword score, excluding the primary, and also
+    // restricted to this round's slim set.
     const scored = scoreSkills(task)
     for (const entry of scored) {
-      if (entry.skill.id === primaryId) continue
+      if (entry.skill.id === primaryId || !candidates.has(entry.skill.id)) continue
       if (entry.score >= 6) return entry.skill.id
       break
     }
@@ -2185,6 +2227,8 @@ export function apply(ctx, config = {}) {
         let skillNote = ''
         let skillId = ''
         let skillBytes = 0  // #11: total bytes of mounted skill bodies
+        let skill1Bytes = 0  // #11 fix: bytes of the PRIMARY skill only
+        let skill2Bytes = 0  // #11 fix: bytes of the SECOND skill only
         let skillSource = 'off'
         let skillError = ''
         const asked = typeof args.skill === 'string' ? args.skill.trim() : ''
@@ -2215,11 +2259,11 @@ export function apply(ctx, config = {}) {
           try {
             if (judged.skill && judged.skill !== SKILL_NONE) {
               const first = await mountOne(judged.skill)
-              if (first.block) { blocks.push(first.block); skillBytes += first.bytes; skillId = judged.skill }
+              if (first.block) { blocks.push(first.block); skillBytes += first.bytes; skill1Bytes = first.bytes; skillId = judged.skill }
             }
             if (judged.skill2) {
               const second = await mountOne(judged.skill2)
-              if (second.block) { blocks.push(second.block); skillBytes += second.bytes }
+              if (second.block) { blocks.push(second.block); skillBytes += second.bytes; skill2Bytes = second.bytes }
             }
             mounted = blocks.join('\n\n')
             if (blocks.length) {
@@ -2334,6 +2378,8 @@ export function apply(ctx, config = {}) {
             skillSource,
             skillError,
             skillBytes,
+            skill1Bytes,
+            skill2Bytes,
             skill2: judged && judged.skill2 ? judged.skill2 : '',
             // #3: degraded is true for a judge-layer fallback (#39) OR an
             // execution-layer failover away from the primary provider.
@@ -2370,6 +2416,8 @@ export function apply(ctx, config = {}) {
             skillSource,
             skillError,
             skillBytes,
+            skill1Bytes,
+            skill2Bytes,
             skill2: judged && judged.skill2 ? judged.skill2 : '',
             degraded: Boolean(judged && judged.degraded),
             ms: Date.now() - routedAt,
@@ -3270,12 +3318,19 @@ export function apply(ctx, config = {}) {
         // total bytes mounted (top-1 + top-2), so the panel can show skill usage.
         const mountMap = new Map()
         for (const d of allDecisions) {
-          for (const id of [d.skill, d.skill2]) {
-            if (!id || id === 'none') continue
-            if (!mountMap.has(id)) mountMap.set(id, { id, mounts: 0, bytes: 0 })
-            const m = mountMap.get(id)
+          // #11 fix: bytes are attributed per skill (skill1Bytes to the primary,
+          // skill2Bytes to the second) — NOT the shared total to both.
+          if (d.skill && d.skill !== 'none') {
+            if (!mountMap.has(d.skill)) mountMap.set(d.skill, { id: d.skill, mounts: 0, bytes: 0 })
+            const m = mountMap.get(d.skill)
             m.mounts += 1
-            m.bytes += Math.round(d.skillBytes || 0)
+            m.bytes += Math.round(d.skill1Bytes || 0)
+          }
+          if (d.skill2) {
+            if (!mountMap.has(d.skill2)) mountMap.set(d.skill2, { id: d.skill2, mounts: 0, bytes: 0 })
+            const m = mountMap.get(d.skill2)
+            m.mounts += 1
+            m.bytes += Math.round(d.skill2Bytes || 0)
           }
         }
         report.skillMounts = [...mountMap.values()].sort((a, b) => b.mounts - a.mounts)

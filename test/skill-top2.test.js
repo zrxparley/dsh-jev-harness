@@ -134,3 +134,58 @@ test('#11: harness_skill read with sibling returns the sibling document, not SKI
     assert.ok(res.model.includes('mocking.md'), 'model names the sibling')
   } finally { stub.restore(); removeHome(home) }
 })
+
+test('#11 fix: an id OUTSIDE this round slim set is NOT mounted even if the judge scores it 0.5', async () => {
+  const home = makeHome('top2-outside')
+  writeStore(home)
+  // judge returns wayfinder (a real catalog id, but NOT in this task's slim set) at 0.5
+  const judge = judgeWithProbs('engineering/tdd', {
+    'engineering/tdd': 0.9,
+    'engineering/wayfinder': 0.5,
+  })
+  const stub = stubFetch((url, init) => {
+    const j = judge(url, init); if (j !== undefined) return j
+    if (url.includes('/chat/completions')) return chatResponse('完成')
+    if (url.includes('raw.githubusercontent.com')) {
+      return new Response('---\nname: x\ndescription: y\n---\n# Body\n', { status: 200, headers: { 'content-type': 'text/plain' } })
+    }
+    return undefined
+  })
+  try {
+    const { tools } = await boot({ home })
+    const res = await tools.get('harness_call').execute({ task: 'build this feature test-first', tier: 'auto' }, {})
+    assert.ok(res.note.includes('engineering/tdd'), 'primary still mounted')
+    assert.ok(!res.note.includes('engineering/wayfinder'), `id outside the slim set must NOT be mounted: ${res.note}`)
+  } finally { stub.restore(); removeHome(home) }
+})
+
+test('#11 fix: skillMounts attributes bytes per skill, not the shared total to both', async () => {
+  const home = makeHome('top2-bytes')
+  writeStore(home)
+  const judge = judgeWithProbs('engineering/tdd', { 'engineering/tdd': 0.9, 'engineering/code-review': 0.5 })
+  const stub = stubFetch((url, init) => {
+    const j = judge(url, init); if (j !== undefined) return j
+    if (url.includes('/chat/completions')) return chatResponse('完成')
+    if (url.includes('raw.githubusercontent.com')) {
+      return new Response('---\nname: x\ndescription: y\n---\n# Body\n', { status: 200, headers: { 'content-type': 'text/plain' } })
+    }
+    return undefined
+  })
+  try {
+    const { tools, routes } = await boot({ home })
+    await tools.get('harness_call').execute({ task: 'build this feature test-first', tier: 'auto' }, {})
+    const stats = (await callRoute(routes, STATS, { url: `${STATS}?hours=24` })).body
+    const usage = readJsonFile(usageFile(home))
+    const d = usage.decisions.at(-1)
+    // per-skill bytes: the primary and the second must NOT both carry the shared total
+    assert.ok(d.skill1Bytes > 0, 'primary bytes recorded separately')
+    assert.ok(d.skill2Bytes > 0, 'second bytes recorded separately')
+    assert.ok(d.skill1Bytes <= d.skillBytes, 'primary bytes cannot exceed the total')
+    assert.ok(d.skill2Bytes <= d.skillBytes, 'second bytes cannot exceed the total')
+    // and the skillMounts entry for each id must reflect its OWN bytes, not the shared total
+    const tdd = stats.skillMounts.find(m => m.id === 'engineering/tdd')
+    const review = stats.skillMounts.find(m => m.id === 'engineering/code-review')
+    assert.equal(tdd.bytes, d.skill1Bytes, 'primary mount bytes = its own bytes')
+    assert.equal(review.bytes, d.skill2Bytes, 'second mount bytes = its own bytes')
+  } finally { stub.restore(); removeHome(home) }
+})
