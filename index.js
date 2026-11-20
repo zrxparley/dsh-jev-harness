@@ -158,6 +158,18 @@ function pick(...values) {
   return ''
 }
 
+/**
+ * #21：一个值到底从哪来 —— 本机设置 / 插件配置 / 环境变量 / 没有。
+ * 面板要如实显示「来自环境变量 KIMI_API_KEY」，而不是把 env 值当成「本机已保存」。
+ */
+function sourceOf(storeValue, configValue, envValue) {
+  const nonEmpty = (value) => (typeof value === 'string' && value.trim() !== '')
+  if (nonEmpty(storeValue)) return 'settings'
+  if (nonEmpty(configValue)) return 'config'
+  if (nonEmpty(envValue)) return 'env'
+  return 'none'
+}
+
 function resolveConfig(config = {}, store = readStore()) {
   const c = config && typeof config === 'object' ? config : {}
   return {
@@ -167,16 +179,28 @@ function resolveConfig(config = {}, store = readStore()) {
     jev: {
       base: pick(store.jevBaseUrl, c.jevBaseUrl, env('JEV_BASE_URL')),
       key: pick(store.jevApiKey, c.jevApiKey, env('JEV_API_KEY')),
+      // #21: 来源与 env 变量名，供面板如实显示（也挡住「把 env 值当本机设置」的误读）。
+      keySource: sourceOf(store.jevApiKey, c.jevApiKey, env('JEV_API_KEY')),
+      keyEnv: 'JEV_API_KEY',
+      baseSource: sourceOf(store.jevBaseUrl, c.jevBaseUrl, env('JEV_BASE_URL')),
       model: pick(store.jevModel, c.jevModel, env('JEV_MODEL'), 'jev-latest'),
     },
     kimi: {
       base: pick(store.kimiBaseUrl, c.kimiBaseUrl, env('KIMI_BASE_URL')),
       key: pick(store.kimiApiKey, c.kimiApiKey, env('KIMI_API_KEY')),
+      // #21: 来源与 env 变量名，供面板如实显示（也挡住「把 env 值当本机设置」的误读）。
+      keySource: sourceOf(store.kimiApiKey, c.kimiApiKey, env('KIMI_API_KEY')),
+      keyEnv: 'KIMI_API_KEY',
+      baseSource: sourceOf(store.kimiBaseUrl, c.kimiBaseUrl, env('KIMI_BASE_URL')),
       model: pick(store.kimiModel, c.kimiModel, env('KIMI_MODEL'), 'kimi-k3.1-pro'),
     },
     dsf: {
       base: pick(store.dsfBaseUrl, c.dsfBaseUrl, env('DSF_BASE_URL')),
       key: pick(store.dsfApiKey, c.dsfApiKey, env('DSF_API_KEY')),
+      // #21: 来源与 env 变量名，供面板如实显示（也挡住「把 env 值当本机设置」的误读）。
+      keySource: sourceOf(store.dsfApiKey, c.dsfApiKey, env('DSF_API_KEY')),
+      keyEnv: 'DSF_API_KEY',
+      baseSource: sourceOf(store.dsfBaseUrl, c.dsfBaseUrl, env('DSF_BASE_URL')),
       model: pick(store.dsfModel, c.dsfModel, env('DSF_MODEL'), 'deepseek-v4.1-flash-1017'),
     },
     skills: {
@@ -2998,6 +3022,10 @@ export function apply(ctx, config = {}) {
       keySet: live[key].key !== '',
       baseFromSettings: Boolean(saved[`${key}BaseUrl`]),
       keyFromSettings: Boolean(saved[`${key}ApiKey`]),
+      // #21: 来源可见。'env' 时带上变量名，面板显示「来自环境变量 KIMI_API_KEY」。
+      keySource: live[key].keySource || (live[key].key ? 'unknown' : 'none'),
+      keyEnv: live[key].keyEnv || '',
+      baseSource: live[key].baseSource || (saved[`${key}BaseUrl`] ? 'settings' : 'none'),
     })
     // Honest state for the client (#13). The client must render this, never
     // infer from `enabled`: a fresh install is enabled but cannot serve.

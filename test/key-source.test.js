@@ -111,3 +111,25 @@ test('#21: 面板渲染出常驻来源说明与显示/隐藏按钮', { skip }, (
     stub.restore()
   }
 })
+
+test('#21: /status 如实报告密钥来源（env / 本机 / 未设置）', async () => {
+  const home = makeHome('key-source-field')
+  writeStore(home, { kimiApiKey: '', dsfApiKey: '', jevApiKey: 'sk-saved-locally' })
+  const prev = process.env.KIMI_API_KEY
+  process.env.KIMI_API_KEY = 'sk-from-env'
+  const stub = stubFetch(() => undefined)
+  try {
+    const { routes } = await boot({ home })
+    const status = (await callRoute(routes, STATUS, { url: STATUS })).body
+    assert.equal(status.gateways.kimi.keySource, 'env')
+    assert.equal(status.gateways.kimi.keyEnv, 'KIMI_API_KEY')
+    assert.equal(status.gateways.kimi.keyFromSettings, false, 'env 来源不算本机设置')
+    assert.equal(status.gateways.jev.keySource, 'settings')
+    assert.equal(status.gateways.dsf.keySource, 'none')
+    assert.equal(status.gateways.dsf.keyEnv, 'DSF_API_KEY', '即使没设置，也要能说出变量名')
+  } finally {
+    if (prev === undefined) delete process.env.KIMI_API_KEY
+    else process.env.KIMI_API_KEY = prev
+    stub.restore(); removeHome(home)
+  }
+})
