@@ -85,7 +85,9 @@ test('pick 交给 JEV 判定器：题目里要有 none 和候选 id，选中结�
     assert.ok(asked, 'pick 没有去问 JEV 判定器')
     assert.ok('none' in asked.criteria, '判定题目里必须有 none 选项')
     assert.ok('engineering/tdd' in asked.criteria, '判定题目里必须有候选技能')
-    assert.equal(Object.keys(asked.criteria).length, 40, '应该是 none + 39 个候选')
+    // #38: candidates are slimmed to top-8 by local keyword score, not the whole catalog.
+    assert.equal(Object.keys(asked.criteria).length, 9, '#38: 应该是 none + 8 个瘦身候选')
+    assert.ok(Object.keys(asked.criteria).length <= 9, '#38: 候选数不得超过 none+8')
     assert.equal(pick.ok, true)
     assert.equal(pick.model, 'engineering/tdd')
     assert.equal(pick.text, 'engineering/tdd')

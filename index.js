@@ -26,7 +26,7 @@ import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
 import { SKILLS, SKILL_BY_ID, SKILLS_SNAPSHOT } from './skills.js'
-import { TIER_CRITERIA, TIER_INSTRUCTIONS, SKILL_NONE_CRITERIA, SKILL_INSTRUCTIONS, CRITERIA_VERSION } from './criteria.js'
+import { TIER_CRITERIA, TIER_INSTRUCTIONS, SKILL_NONE_CRITERIA, SKILL_INSTRUCTIONS, DIFFICULTY_CRITERIA, DIFFICULTY_INSTRUCTIONS, CRITERIA_VERSION } from './criteria.js'
 
 const PACKAGE_VERSION = (() => {
   try {
@@ -500,6 +500,7 @@ function recordDecision(entry) {
           : null,
         skill: entry.skill || '',
         criteriaVersion: entry.criteriaVersion || CRITERIA_VERSION,
+        difficulty: entry.difficulty || '',
         ok: Boolean(entry.ok),
         ms: Math.round(entry.ms || 0),
         pt: entry.pt || 0,
@@ -1140,19 +1141,41 @@ export function apply(ctx, config = {}) {
 
   const SKILL_NONE = 'none'
 
-  /** Token-overlap fallback used when the JEV judge is unreachable. */
-  function heuristicSkill(task) {
-    const words = new Set(String(task).toLowerCase().split(/[^a-z0-9\u4e00-\u9fff]+/).filter(w => w.length > 2))
-    let best = null
-    let bestScore = 0
+  /**
+   * Score every catalog skill against the task by token overlap, best-first:
+   * [{ skill, score }]. Shared by the heuristic fallback and by #38 candidate
+   * slimming (top-N before asking JEV).
+   */
+  function scoreSkills(task) {
+    const words = new Set(String(task).toLowerCase().split(/[^a-z0-9一-鿿]+/).filter(w => w.length > 2))
+    const scored = []
     for (const skill of skillCatalog().skills) {
       const hay = `${skill.id} ${skill.name} ${skill.description}`.toLowerCase()
       let score = 0
       for (const w of words) if (hay.includes(w)) score += w.length
-      if (score > bestScore) { bestScore = score; best = skill }
+      scored.push({ skill, score })
     }
-    if (!best || bestScore < 6) return { id: SKILL_NONE, confidence: 0, reason: 'no skill matched the wording' }
-    return { id: best.id, confidence: 0, reason: `local keyword match on ${best.id}` }
+    scored.sort((a, b) => b.score - a.score)
+    return scored
+  }
+
+  /** Token-overlap fallback used when the JEV judge is unreachable. */
+  function heuristicSkill(task) {
+    const best = scoreSkills(task)[0]
+    if (!best || best.score < 6) return { id: SKILL_NONE, confidence: 0, reason: 'no skill matched the wording' }
+    return { id: best.skill.id, confidence: 0, reason: `local keyword match on ${best.skill.id}` }
+  }
+
+  /**
+   * Slim the catalog to the top-N candidates by local keyword score (#38). Pads
+   * with the highest-score entries so N candidates go to JEV regardless of
+   * catalog size — decouples the request body from catalog growth (39 -> 200).
+   */
+  function slimSkills(task, n = 8) {
+    const scored = scoreSkills(task)
+    const top = scored.slice(0, n).filter(e => e.score > 0)
+    const chosen = top.length > 0 ? top : scored.slice(0, n)
+    return chosen.map(e => e.skill)
   }
 
   /**
@@ -1160,10 +1183,11 @@ export function apply(ctx, config = {}) {
    * catalog (plus `none`). Falls back to the keyword matcher.
    */
   async function pickSkill(task, context, cfg2, exec) {
-    const catalog = skillCatalog()
     if (!cfg2.jev.base) return heuristicSkill(task)
+    // #38: slim to top-8 candidates by local keyword score before asking JEV,
+    // so the request body does not grow with the catalog (39 -> 200 same size).
     const criteria = { [SKILL_NONE]: SKILL_NONE_CRITERIA }
-    for (const skill of catalog.skills) {
+    for (const skill of slimSkills(task, 8)) {
       criteria[skill.id] = `${skill.description.slice(0, 240)}`
     }
     const startedAt = Date.now()
@@ -1225,6 +1249,101 @@ export function apply(ctx, config = {}) {
       return { ...fallback, reason: `jev skill judge failed (${shortError(err)}); ${fallback.reason}` }
     }
   }
+
+  /**
+   * #38 merged judge: ONE HTTP request answers tier + skill + difficulty.
+   *
+   * skill candidates are slimmed locally to top-8 (slimSkills) so the request
+   * body stays <12KB and does not grow with the catalog. Produces a single
+   * `jev` usage record (tool 'judge'), and returns all three dimensions plus
+   * confidence so the ledger writes ONE decision row.
+   *
+   * Falls back to heuristics for all three dimensions when JEV is unreachable
+   * or returns unusable answers, marked source:'heuristic'.
+   */
+  async function judgeOnce(task, context, exec) {
+    const heuristic = () => ({
+      ...heuristicTier(task),
+      skill: heuristicSkill(task).id,
+      difficulty: 'normal',
+      source: 'heuristic',
+    })
+    if (!cfg.jev.base) return { ...heuristic(), reason: 'jev not configured; used heuristic' }
+    const startedAt = Date.now()
+    try {
+      const base = String(cfg.jev.base).replace(/\/+$/, '')
+      const url = /\/v1$/.test(base) ? `${base}/systemone` : `${base}/v1/systemone`
+      const skillCriteria = { [SKILL_NONE]: SKILL_NONE_CRITERIA }
+      for (const skill of slimSkills(task, 8)) {
+        skillCriteria[skill.id] = `${skill.description.slice(0, 240)}`
+      }
+      const link = combineSignal(cfg.timeoutMs, exec && exec.signal)
+      let raw, res
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(cfg.jev.key ? { authorization: `Bearer ${cfg.jev.key}` } : {}),
+          },
+          body: JSON.stringify({
+            model: cfg.jev.model || 'jev-latest',
+            state: context ? { task, context } : { task },
+            questions: {
+              tier: { type: 'choice', instructions: TIER_INSTRUCTIONS, criteria: { ...TIER_CRITERIA } },
+              skill: { type: 'choice', instructions: SKILL_INSTRUCTIONS, criteria: skillCriteria },
+              difficulty: { type: 'choice', instructions: DIFFICULTY_INSTRUCTIONS, criteria: { ...DIFFICULTY_CRITERIA } },
+            },
+          }),
+          signal: link.signal,
+        })
+        raw = await res.text()
+      } finally {
+        link.dispose()
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${raw.slice(0, 200)}`)
+      const body = JSON.parse(raw)
+      // ONE usage record for the whole merged judgement.
+      recordUsage({
+        gateway: 'jev', model: cfg.jev.model, tool: 'judge', ok: true, status: res.status,
+        ms: Date.now() - startedAt,
+        promptTokens: Number(body?.usage?.input_tokens) || 0,
+        completionTokens: Number(body?.usage?.output_tokens) || 0,
+      })
+      const answers = body?.answers || {}
+      const tierAns = answers.tier
+      const skillAns = answers.skill
+      const diffAns = answers.difficulty
+      const tierChoice = tierAns && (tierAns.choice || tierAns.noul)
+      const tier = tierChoice === 'decision' || tierChoice === 'execution' ? tierChoice : undefined
+      const skillChoice = skillAns && (skillAns.choice || skillAns.noul)
+      const skill = skillChoice && (skillChoice === SKILL_NONE || skillById(skillChoice)) ? skillChoice : SKILL_NONE
+      const diffChoice = diffAns && (diffAns.choice || diffAns.noul)
+      const difficulty = ['trivial', 'normal', 'hard'].includes(diffChoice) ? diffChoice : 'normal'
+      const tierConf = Number(tierAns?.confidence)
+      if (!tier) {
+        return { ...heuristic(), source: 'heuristic', reason: 'jev returned no usable tier; used heuristic' }
+      }
+      return {
+        tier,
+        source: 'jev',
+        choice: tier,
+        skill,
+        difficulty,
+        confidence: Number.isFinite(tierConf) ? tierConf : undefined,
+        model: body.model || cfg.jev.model,
+        reason: `jev ${body.model || cfg.jev.model} tier=${tier} skill=${skill} difficulty=${difficulty}` +
+          (Number.isFinite(tierConf) ? ` (confidence ${tierConf.toFixed(2)})` : ''),
+      }
+    } catch (err) {
+      recordUsage({
+        gateway: 'jev', model: cfg.jev.model, tool: 'judge', ok: false, status: 0,
+        ms: Date.now() - startedAt, error: shortError(err),
+      })
+      return { ...heuristic(), reason: `jev merged judge failed (${shortError(err)}); used heuristic` }
+    }
+  }
+
 
   /** The block prepended to a routed call so the model actually follows the skill. */
   function skillBlock(skill, body, maxChars) {
@@ -1398,18 +1517,42 @@ export function apply(ctx, config = {}) {
         let tier = askedTier
         let note = ''
         let judged = null
-        if (tier === 'auto') {
-          judged = await decideTier(task, args.context)
-          tier = judged.tier
-          note = `auto-classified as ${tier}: ${judged.reason}`
-        }
         // Mount the best-fitting skill into the call so the routed model follows it.
         let mounted = ''
         let skillNote = ''
         let skillId = ''
         const asked = typeof args.skill === 'string' ? args.skill.trim() : ''
         const wantSkill = asked === '' || asked === 'auto' ? (cfg.skills.auto ? 'auto' : 'off') : asked
-        if (wantSkill !== 'off') {
+        // #38: when BOTH tier and skill are auto, do a single merged judge request
+        // (tier + skill + difficulty) instead of two separate JEV round-trips.
+        const merged = tier === 'auto' && wantSkill === 'auto'
+        if (merged) {
+          judged = await judgeOnce(task, args.context, exec)
+          tier = judged.tier
+          note = `auto-classified as ${tier}: ${judged.reason}`
+        } else if (tier === 'auto') {
+          judged = await decideTier(task, args.context)
+          tier = judged.tier
+          note = `auto-classified as ${tier}: ${judged.reason}`
+        }
+        if (merged) {
+          // skill already decided by the merged judge; mount it without a 2nd request.
+          if (judged.skill && judged.skill !== SKILL_NONE) {
+            try {
+              const skill = skillById(judged.skill)
+              if (skill) {
+                const loaded = await skillBody(skill, cfg, exec)
+                mounted = skillBlock(skill, loaded.text, cfg.skills.maxChars)
+                skillId = skill.id
+                skillNote = ` · skill=${skill.id}${loaded.cached ? ' (cached)' : ''} (merged)`
+              }
+            } catch (err) {
+              skillNote = ` · skill mount failed: ${shortError(err)}`
+            }
+          } else {
+            skillNote = ' · skill=none'
+          }
+        } else if (wantSkill !== 'off') {
           try {
             const chosen = wantSkill === 'auto'
               ? await pickSkill(task, args.context, cfg, exec)
@@ -1462,6 +1605,7 @@ export function apply(ctx, config = {}) {
             source: judged ? judged.source : 'explicit',
             choice: judged ? judged.choice : tier,
             confidence: judged ? judged.confidence : undefined,
+            difficulty: judged ? judged.difficulty : undefined,
             ms: Date.now() - routedAt,
             pt: answer.promptTokens || 0,
             ct: answer.completionTokens || 0,
@@ -1482,6 +1626,7 @@ export function apply(ctx, config = {}) {
             source: judged ? judged.source : 'explicit',
             choice: judged ? judged.choice : tier,
             confidence: judged ? judged.confidence : undefined,
+            difficulty: judged ? judged.difficulty : undefined,
             ms: Date.now() - routedAt,
             error: shortError(err),
           })
