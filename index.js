@@ -52,7 +52,7 @@ function T(key, fallback) {
   try {
     const value = __jevLocale(key)
     if (typeof value === 'string' && value && value !== key) return value
-  } catch { /* use the English fallback below */ }
+  } catch { /* use the fallback below */ }
   return fallback !== undefined ? fallback : key
 }
 
@@ -68,6 +68,20 @@ function env(name) {
   } catch {
     return ''
   }
+}
+
+// #20: tiny locale helper for host-side user-facing strings. Reads the
+// zh/en locale JSON and returns the localized value for a key (falls back to English).
+let __jevLocaleTable = null
+function t(key) {
+  if (!__jevLocaleTable) {
+    try {
+      const lang = String(process.env.JEV_LOCALE || 'zh').toLowerCase() === 'en' ? 'en' : 'zh'
+      const file = path.join(__dirname, 'locale', `${lang}.json`)
+      __jevLocaleTable = JSON.parse(fs.readFileSync(file, 'utf8'))
+    } catch { __jevLocaleTable = {} }
+  }
+  return __jevLocaleTable[key] || key
 }
 
 function num(value, fallback) {
@@ -3450,7 +3464,7 @@ export function apply(ctx, config = {}) {
       path: '/api/jev-harness/token',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
-        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', '请求方法不允许') }); return }
         // Bootstrap 是整条链路唯一的软点：拿得到它的进程也就拿得到 token。
         // 见 BRIDGE_TOKEN 注释里的诚实边界。
         writeJson(res, 200, { ok: true, token: BRIDGE_TOKEN })
@@ -3462,7 +3476,7 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', '请求方法不允许') }); return }
         const payload = await statusPayload()
         payload.selfCheck = selfCheckPayload()
         payload.credentialStorage = { ...credentialState }
@@ -3475,7 +3489,7 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', '请求方法不允许') }); return }
         // #9: 幂等迁移。重复执行不会覆盖已存在的凭据（hydrate 里有 alreadyStored 判断）。
         await credentialReady.catch(() => {})
         const state = await hydrateCredentials()
@@ -3489,7 +3503,7 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', '请求方法不允许') }); return }
         const body = await readJsonBody(req, 4096) || {}
         // #9: 擦除旧明文必须由用户显式确认，绝不自动执行。
         if (body.confirm !== true) {
@@ -3535,7 +3549,7 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', '请求方法不允许') }); return }
         // #7: 客户端 apply() 把 slot 注册结果上报到这里；面板白屏时 /status 仍能说出哪一格坏了。
         const body = await readJsonBody(req, 16384)
         if (!body || typeof body !== 'object' || !body.slots || typeof body.slots !== 'object') {
@@ -3552,7 +3566,7 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', '请求方法不允许') }); return }
         const body = await readJsonBody(req)
         if (!body || typeof body !== 'object') { writeJson(res, 400, { ok: false, error: 'malformed JSON body' }); return }
         const patch = {}
@@ -3654,7 +3668,7 @@ path: '/api/jev-harness/export',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local-only' }); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', '请求方法不允许') }); return }
         const params = new URL(req.url || '/api/jev-harness/export', 'http://127.0.0.1').searchParams
         const wantSession = params.get('session') || ''
         const usage = readUsage()
@@ -3678,7 +3692,7 @@ path: '/api/jev-harness/export',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', '请求方法不允许') }); return }
         const body = await readJsonBody(req)
         if (!body || typeof body !== 'object') { writeJson(res, 400, { ok: false, error: 'malformed JSON body' }); return }
         const flag = truthy(body.enabled, undefined)
@@ -3698,7 +3712,7 @@ path: '/api/jev-harness/export',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', '请求方法不允许') }); return }
         refresh()
         try {
           const synced = await refreshSkills(cfg)
@@ -3714,7 +3728,7 @@ path: '/api/jev-harness/export',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', '请求方法不允许') }); return }
         const params = new URL(req.url || '/api/jev-harness/stats', 'http://127.0.0.1').searchParams
         const asked = Number(params.get('hours'))
         const report = usageReport(Number.isFinite(asked) && asked > 0 ? Math.min(168, asked) : 24)
@@ -3804,7 +3818,7 @@ path: '/api/jev-harness/export',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
+        if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', '请求方法不允许') }); return }
         const url = new URL(req.url || '/', 'http://127.0.0.1')
         const provider = String(url.searchParams.get('provider') || '').trim()
         const llm = dshLlm()
@@ -3828,7 +3842,7 @@ path: '/api/jev-harness/export',
       handler: async (req, res) => {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
-        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', 'Method not allowed') }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: T('jev.error.methodNotAllowed', '请求方法不允许') }); return }
         refresh()
         const body = await readJsonBody(req, 16384) || {}
         const wanted = typeof body.gateway === 'string' && ['jev', 'kimi', 'dsf'].includes(body.gateway) ? body.gateway : ''
