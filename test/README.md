@@ -39,6 +39,10 @@ test/
   panel-warning.test.js     账本损坏时面板上的可见提示
   skills.test.js            技能目录 / 刷新 / JEV pick
   skills-guard.test.js      坏 tar / 空 tar / 缺字段 / 数量腰斩 / 原子替换（#28）
+
+> 已知取舍（#28）：技能刷新的护栏是「新目录 < 10 条 或 < 原数量 50% 就拒绝」。
+> 这意味着把 `skillsRepo` 指到一个只有几个技能的小仓库时，刷新会一直失败——
+> 这是 issue 原文的要求，不是 bug。真要支持小仓库，需要先改 #28 的门槛定义。
   helpers/record-child.js   并发用例的子进程：往同一个 DSH_HOME 连记 N 次
 ```
 
