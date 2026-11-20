@@ -26,6 +26,7 @@ import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
 import { SKILLS, SKILL_BY_ID, SKILLS_SNAPSHOT } from './skills.js'
+import { TIER_CRITERIA, TIER_INSTRUCTIONS } from './criteria.js'
 
 export const name = 'jev-harness'
 export const inject = ['tools']
@@ -865,11 +866,8 @@ export function apply(ctx, config = {}) {
               questions: {
                 tier: {
                   type: 'choice',
-                  instructions: 'Decide which tier should handle this task.',
-                  criteria: {
-                    decision: 'Requires human-level judgment: evaluation, trade-offs, review, architecture, risk, strategy, or quality calls.',
-                    execution: 'Mechanical work: implementation, transformation, formatting, extraction, bulk generation, or translation.',
-                  },
+                  instructions: TIER_INSTRUCTIONS,
+                  criteria: { ...TIER_CRITERIA },
                 },
               },
             }),
