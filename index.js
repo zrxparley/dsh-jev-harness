@@ -956,6 +956,26 @@ function heuristicTier(task) {
  * every call. Any system messages are preserved. Returns a NEW array — the
  * input is never mutated, and nothing here is written to disk or the ledger.
  */
+/**
+ * #2 security: redact secrets from conversation text BEFORE it is sent to a
+ * gateway or written to the ledger. Covers sk-… keys, Bearer tokens,
+ * apiKey/api_key/token key-values, and 32+ char hex runs. Replaces the secret
+ * with [REDACTED] — never a partial mask that still leaks the prefix.
+ */
+function redactSecrets(text) {
+  if (!text || typeof text !== 'string') return text
+  let out = text
+  // Bearer tokens: "Bearer <token>"
+  out = out.replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/g, 'Bearer [REDACTED]')
+  // sk-… style API keys (sk-live-…, sk-…): sk-<alnum/dash/underscore 6+>
+  out = out.replace(/\bsk-[A-Za-z0-9_-]{6,}\b/g, 'sk-[REDACTED]')
+  // apiKey / api_key / token / secret / password as key-value pairs
+  out = out.replace(/(apiKey|api_key|apikey|token|secret|password|passwd|pwd)(\s*[:=]\s*)["']?([A-Za-z0-9._~+/=-]{6,})["']?/gi, '$1$2[REDACTED]')
+  // 32+ char continuous hex strings (typical API tokens)
+  out = out.replace(/\b[a-fA-F0-9]{32,}\b/g, '[REDACTED]')
+  return out
+}
+
 export function capHistory(messages, turns = 6, maxChars = 8000) {
   const list = Array.isArray(messages) ? messages : []
   const system = list.filter(m => m && m.role === 'system')
@@ -3271,6 +3291,19 @@ export function apply(ctx, config = {}) {
         if (Object.prototype.hasOwnProperty.call(body, 'enabled')) patch.enabled = body.enabled
         if (Object.prototype.hasOwnProperty.call(body, 'skillsAuto')) patch.skillsAuto = body.skillsAuto
         if (typeof body.followModel === 'boolean') patch.followModel = body.followModel
+        // #2 fix (Verifier): the history switch + turn/char caps must actually be
+        // accepted by /save, or the panel toggle reports "saved" but nothing persists.
+        if (typeof body.historyAuto === 'boolean') patch.historyAuto = body.historyAuto
+        if (body.historyTurns !== undefined) {
+          const v = Number(body.historyTurns)
+          if (!Number.isFinite(v) || v < 1 || v > 50) { writeJson(res, 400, { ok: false, error: 'historyTurns must be an integer between 1 and 50' }); return }
+          patch.historyTurns = Math.round(v)
+        }
+        if (body.historyMaxChars !== undefined) {
+          const v = Number(body.historyMaxChars)
+          if (!Number.isFinite(v) || v < 100) { writeJson(res, 400, { ok: false, error: 'historyMaxChars must be a number >= 100' }); return }
+          patch.historyMaxChars = Math.round(v)
+        }
         // #4: accept the judge escalation threshold (0-1 number).
         if (body.lowConfidenceThreshold !== undefined) {
           const v = Number(body.lowConfidenceThreshold)
