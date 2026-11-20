@@ -625,7 +625,8 @@ function recordDecision(entry) {
       if (!Array.isArray(usage.decisions)) usage.decisions = []
       usage.decisions.push({
         t: new Date(entry.at || Date.now()).toISOString(),
-        task: String(entry.task || '').slice(0, 120),
+        // #2 security: 摘要入库前先脱敏，再截断 —— 先 slice 会把密钥切成半截留下来。
+        task: redactSecrets(String(entry.task || '')).slice(0, 120),
         // #41: every decision carries its session so the ledger can be read
         // per-session. 'unknown' = caller could not supply one (e.g. L1 tools);
         // 'legacy' = pre-partition records backfilled on read.
@@ -999,7 +1000,17 @@ export function capHistory(messages, turns = 6, maxChars = 8000) {
     const text = textOf(only).slice(0, maxChars)
     kept = [{ ...only, content: text }]
   }
-  return [...system, ...kept]
+  // #2 security: redact secrets from every retained message BEFORE it reaches the
+  // gateway. The input array is never mutated; we return redacted copies.
+  const redact = (m) => {
+    if (!m) return m
+    if (typeof m.content === 'string') return { ...m, content: redactSecrets(m.content) }
+    if (Array.isArray(m.content)) {
+      return { ...m, content: m.content.map(part => part && part.type === 'text' ? { ...part, text: redactSecrets(part.text || '') } : part) }
+    }
+    return m
+  }
+  return [...system.map(redact), ...kept.map(redact)]
 }
 
 export function createJevAdapter(deps) {
@@ -1043,7 +1054,9 @@ export function createJevAdapter(deps) {
 
   async function choose(options) {
     const cfg = readConfig()
-    const task = lastUserText(options && options.messages)
+    // #2 security: 判定与账本都用脱敏后的任务文本 —— 密钥既不进判定请求，
+    // 也不进 decisions[].task。探针直接抓 adapter 传给 recordDecision 的参数。
+    const task = redactSecrets(lastUserText(options && options.messages))
     const key = cacheKey(options, task)
     const hit = cache.get(key)
     if (hit && Date.now() - hit.at < CACHE_TTL) return { ...hit.value, cached: true }
@@ -1145,7 +1158,7 @@ export function createJevAdapter(deps) {
     })
     recordDecision({
       session: String((options && options.sessionId) || 'unknown'),
-      task: lastUserText(options && options.messages), tier: decided.tier, asked: 'auto',
+      task: redactSecrets(lastUserText(options && options.messages)), tier: decided.tier, asked: 'auto',
       source: decided.source, choice: decided.tier, confidence: decided.confidence,
       probabilities: decided.probabilities,
       provider: binding.key || binding.provider, model: binding.model,
