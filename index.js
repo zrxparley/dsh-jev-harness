@@ -72,12 +72,13 @@ const STORE_FIELDS = [
   'judgeTimeoutMs',
   'timeoutMs',
   'timeoutProbe', 'timeoutExecution', 'timeoutDecision', 'timeoutReview',
+  'historyAuto', 'historyTurns', 'historyMaxChars',
 ]
 
 /** Booleans are stored as real JSON booleans, not strings. */
-const STORE_BOOLEANS = new Set(['enabled', 'skillsAuto', 'followModel'])
+const STORE_BOOLEANS = new Set(['enabled', 'skillsAuto', 'followModel', 'historyAuto'])
 // #4: numeric store fields must survive readStore (otherwise the threshold is dropped).
-const STORE_NUMBERS = new Set(['lowConfidenceThreshold', 'judgeTimeoutMs', 'timeoutMs', 'timeoutProbe', 'timeoutExecution', 'timeoutDecision', 'timeoutReview'])
+const STORE_NUMBERS = new Set(['lowConfidenceThreshold', 'judgeTimeoutMs', 'timeoutMs', 'timeoutProbe', 'timeoutExecution', 'timeoutDecision', 'timeoutReview', 'historyTurns', 'historyMaxChars'])
 
 function truthy(value, fallback) {
   if (typeof value === 'boolean') return value
@@ -225,6 +226,14 @@ function resolveConfig(config = {}, store = readStore()) {
     // /save takes effect on the next call's combineSignal (the tool-REGISTRATION
     // timeout is a separate snapshot; see the reload notice in /save).
     timeoutMs: num(store.timeoutMs !== undefined ? store.timeoutMs : c.timeoutMs, 120000),
+    // #2: auto conversation history for the adapter. auto = cap to the last N
+    // turns within a char budget; off = pass the raw options.messages through.
+    // History is used only for inference — never written to disk or the ledger.
+    history: {
+      auto: store.historyAuto !== undefined ? truthy(store.historyAuto, true) : truthy(c.historyAuto, true),
+      turns: num(store.historyTurns, 6),
+      maxChars: num(store.historyMaxChars, 8000),
+    },
     // #3: per-operation timeouts (probe short, execution mid, decision/review long).
     // Each is panel-overridable via the store; defaults are the safe values.
     timeouts: {
@@ -345,6 +354,54 @@ function emptyUsage() {
  * 进程内粘性保留，避免「面板刷新一次提示就消失」。
  */
 let usageWarning = null
+
+/**
+ * #7 启动自检：工具注册结果由本进程记录，slot 注册结果由客户端 apply() 上报。
+ * 两者合并进 /status.selfCheck —— 面板白屏时用户看不到 console，只能看这里。
+ */
+const selfCheckState = {
+  tools: null,
+  slots: null,
+  slotsReportedAt: '',
+}
+
+function reportToolsSelfCheck(tools) {
+  try {
+    selfCheckState.tools = tools
+  } catch { /* 自检本身绝不影响加载 */ }
+}
+
+function reportSlotsSelfCheck(slots) {
+  try {
+    const failures = Array.isArray(slots && slots.failures) ? slots.failures.slice(0, 32) : []
+    const registered = Array.isArray(slots && slots.registered) ? slots.registered.slice(0, 32) : []
+    selfCheckState.slots = {
+      ok: slots && slots.ok === true && failures.length === 0,
+      total: Number.isFinite(Number(slots && slots.total)) ? Number(slots.total) : registered.length + failures.length,
+      registered: registered.map(name => String(name).slice(0, 60)),
+      failures: failures.map(entry => ({
+        name: String((entry && entry.name) || 'unknown').slice(0, 60),
+        error: String((entry && entry.error) || '').slice(0, 200),
+      })),
+    }
+    selfCheckState.slotsReportedAt = new Date().toISOString()
+  } catch { /* 同上 */ }
+}
+
+/** /status.selfCheck 的最终形状（约定：{ok, slots:{ok,failures[]}, tools:{ok,failures[]}}）。 */
+function selfCheckPayload() {
+  const tools = selfCheckState.tools || {
+    ok: false, total: 0, registered: [], failures: [{ name: '(tools)', error: 'apply() has not registered tools yet' }],
+  }
+  const slots = selfCheckState.slots || { ok: null, reported: false, total: 0, registered: [], failures: [] }
+  const slotsOk = slots.ok === null ? true : slots.ok
+  return {
+    ok: Boolean(tools.ok && slotsOk),
+    tools,
+    slots: { ...slots, reported: Boolean(selfCheckState.slots), at: selfCheckState.slotsReportedAt || null },
+    checkedAt: new Date().toISOString(),
+  }
+}
 
 function usageStat(file) {
   try {
@@ -899,7 +956,7 @@ function heuristicTier(task) {
  * every call. Any system messages are preserved. Returns a NEW array — the
  * input is never mutated, and nothing here is written to disk or the ledger.
  */
-function capHistory(messages, turns = 6, maxChars = 8000) {
+export function capHistory(messages, turns = 6, maxChars = 8000) {
   const list = Array.isArray(messages) ? messages : []
   const system = list.filter(m => m && m.role === 'system')
   const rest = list.filter(m => m && m.role !== 'system')
@@ -1031,6 +1088,13 @@ export function createJevAdapter(deps) {
       ...(target.config || {}),
       provider: binding.provider,
       model: binding.model,
+    }
+    // #2: cap the conversation history to the last N turns within a char budget
+    // (auto). Off keeps the raw options.messages. This bounds cost and never
+    // writes history to disk or the ledger.
+    const historyCfg = (readConfig() && readConfig().history) || { auto: true, turns: 6, maxChars: 8000 }
+    if (historyCfg.auto && Array.isArray(options && options.messages)) {
+      delegated.messages = capHistory(options.messages, historyCfg.turns, historyCfg.maxChars)
     }
     let firstChunk = true
     let promptTokens = 0
@@ -2195,7 +2259,7 @@ export function apply(ctx, config = {}) {
   const tools = [
     {
       name: 'harness_call',
-      description: 'Route work through the JEV tiered harness. While the harness switch is ON this is the ONLY way to produce an answer in the session: always call it with tier=auto — the JEV judge reads the task and picks the tier, then the work runs on Kimi (decision: judgment, evaluation, architecture, risk, quality) or DeepSeek Flash (execution: implementation, transformation, formatting, extraction, generation). Never ask the user to choose a tier. tier=decision / tier=execution exist for diagnostics and internal checks; provider forces a specific model. Returns the model answer plus token usage, and reasoningTokens when the model is a reasoning model.',
+      description: 'Route work through the JEV tiered harness. While the harness switch is ON this is the ONLY way to produce an answer in the session: always call it with tier=auto — the JEV judge reads the task and picks the tier, then the work runs on Kimi (decision: judgment, evaluation, architecture, risk, quality) or DeepSeek Flash (execution: implementation, transformation, formatting, extraction, generation). Never ask the user to choose a tier. tier=decision / tier=execution exist for diagnostics and internal checks; provider forces a specific model. Returns the model answer plus token usage, and reasoningTokens when the model is a reasoning model. #2: the host gives this tool NO conversation messages, so for a follow-up (继续 / 改一下) pass the recent turns explicitly in `context`; otherwise the call is stateless by design.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -2915,6 +2979,8 @@ export function apply(ctx, config = {}) {
       state,
       // #4: echo the judge escalation threshold so the panel input shows the real value.
       lowConfidenceThreshold: live.lowConfidenceThreshold,
+      // #2: history config surfaced for the panel's auto-context switch + turn cap.
+      history: { auto: live.history.auto, turns: live.history.turns, maxChars: live.history.maxChars },
       // #39: judge timeout is separate from the 120s generation timeout.
       judgeTimeoutMs: live.judgeTimeoutMs,
       timeoutMs: live.timeoutMs,
@@ -3170,7 +3236,26 @@ export function apply(ctx, config = {}) {
         if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
         if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
-        writeJson(res, 200, await statusPayload())
+        const payload = await statusPayload()
+        payload.selfCheck = selfCheckPayload()
+        writeJson(res, 200, payload)
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/jev-harness/selfcheck',
+      handler: async (req, res) => {
+        if (!bridgeAllowed(req)) { writeJson(res, 403, LOCAL_ONLY); return }
+        if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
+        if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+        // #7: 客户端 apply() 把 slot 注册结果上报到这里；面板白屏时 /status 仍能说出哪一格坏了。
+        const body = await readJsonBody(req, 16384)
+        if (!body || typeof body !== 'object' || !body.slots || typeof body.slots !== 'object') {
+          writeJson(res, 400, { ok: false, error: 'slots object is required' })
+          return
+        }
+        reportSlotsSelfCheck(body.slots)
+        writeJson(res, 200, { ok: true, selfCheck: selfCheckPayload() })
       },
     },
     {
@@ -3480,7 +3565,22 @@ export function apply(ctx, config = {}) {
   })
 
   ctx.effect(() => {
-    const disposers = tools.map(definition => ctx.tools.register(definition))
+    // #7: 逐个注册、逐个记录。失败不许静默：/status.selfCheck 要能说出「哪个工具没注册上、为什么」。
+    const disposers = []
+    const toolReport = { ok: true, total: tools.length, registered: [], failures: [] }
+    for (const definition of tools) {
+      try {
+        disposers.push(ctx.tools.register(definition))
+        toolReport.registered.push(String(definition && definition.name ? definition.name : 'unknown'))
+      } catch (err) {
+        toolReport.ok = false
+        toolReport.failures.push({
+          name: String(definition && definition.name ? definition.name : 'unknown'),
+          error: shortError(err),
+        })
+      }
+    }
+    reportToolsSelfCheck(toolReport)
 
     const systemPrompt = ctx.get('systemPrompt')
     if (systemPrompt) {
