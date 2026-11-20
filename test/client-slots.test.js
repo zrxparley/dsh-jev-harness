@@ -29,6 +29,7 @@ function reactPkgs() {
 
 function bootClient({ enabled = false } = {}) {
   const stub = stubFetch((url) => {
+    if (url === '/api/jev-harness/token') return jsonResponse({ ok: true, token: 'a'.repeat(64) })
     if (url === '/api/jev-harness/status') return jsonResponse({ ok: true, enabled, gateways: {}, skills: {} })
     return undefined
   })
@@ -93,12 +94,13 @@ test('开关打开时抢占模型选择器席位，关闭时保持释放', async
   const on = bootClient({ enabled: true })
   await nextTick()
   await nextTick()
+  await nextTick()
   assert.equal(on.registrations.length, 8, '开关打开时应多注册 conversation.input.model')
   const seat = on.registrations[7]
   assert.equal(seat.def.name, 'conversation.input.model')
   assert.equal(seat.def.order, 0)
   assert.equal(typeof seat.comp, 'function')
-  assert.deepEqual(on.stub.urls(), ['/api/jev-harness/status'], '只该问一次状态')
+  assert.deepEqual(on.stub.urls(), ['/api/jev-harness/token', '/api/jev-harness/status'], '先取 token，再问一次状态')
   on.stub.restore()
 
   const off = bootClient({ enabled: false })

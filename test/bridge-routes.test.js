@@ -40,6 +40,7 @@ test('status / save / toggle / stats / test 五条路由都通，且写盘真的
         '/api/jev-harness/status',
         '/api/jev-harness/test',
         '/api/jev-harness/toggle',
+        '/api/jev-harness/token',
       ],
       '注册的路由集合变了',
     )

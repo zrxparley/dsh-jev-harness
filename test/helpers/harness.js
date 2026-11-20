@@ -175,12 +175,24 @@ export function makeRes() {
   }
 }
 
-/** 走真实 route.handler，返回 { status, body, headers }。 */
+/**
+ * 走真实 route.handler，返回 { status, body, headers }。
+ *
+ * #26 part 2 起桥路由要求 Bearer token：boot() 会先做一次 bootstrap，把 token
+ * 挂在 routes.bridgeToken 上，这里自动带上。要测未授权分支时：
+ *   token: null    → 不带 Authorization
+ *   token: '<x>'   → 用指定（错误）token
+ */
 export async function callRoute(routes, pathname, opts = {}) {
   const route = routes.get(pathname)
   if (!route) throw new Error(`route not registered: ${pathname} (have: ${[...routes.keys()].join(', ')})`)
+  const { token, ...rest } = opts
+  const headers = { ...(rest.headers || {}) }
+  if (token === null) { /* 故意不带 */ }
+  else if (typeof token === 'string') headers.authorization = `Bearer ${token}`
+  else if (routes.bridgeToken) headers.authorization = `Bearer ${routes.bridgeToken}`
   const res = makeRes()
-  await route.handler(makeReq({ url: pathname, ...opts }), res)
+  await route.handler(makeReq({ url: pathname, ...rest, headers }), res)
   return res.out
 }
 
@@ -209,6 +221,18 @@ export async function boot({ home, config = {} } = {}) {
   const specifier = `${pathToFileURL(ENTRY).href}?boot=${process.pid}-${homeSeq++}`
   const mod = await import(specifier)
   const dispose = mod.apply(ctx, config)
+
+  // 模拟客户端 bootstrap：浏览器同源 GET 不带 Origin，只带 Fetch 元数据。
+  if (routes.has('/api/jev-harness/token')) {
+    const handshake = await callRoute(routes, '/api/jev-harness/token', {
+      origin: null,
+      headers: { 'sec-fetch-site': 'same-origin' },
+    })
+    if (handshake.status === 200 && handshake.body && typeof handshake.body.token === 'string') {
+      routes.bridgeToken = handshake.body.token
+    }
+  }
+
   return { mod, routes, tools, server, dispose, home }
 }
 
