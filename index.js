@@ -726,6 +726,170 @@ function heuristicTier(task) {
   return { tier: 'decision', reason: 'tie; defaulted to quality tier' }
 }
 
+/* ------------------------------------------------------ jev/auto adapter */
+
+/**
+ * Provider adapter that exposes ONE model, `jev/auto` (#37).
+ *
+ * Flow: DSH hands us messages → ask JEV for the tier → delegate to a REAL
+ * provider/model from a whitelist → pass the upstream stream through untouched.
+ *
+ * Hard rules baked in here:
+ * - never route `jev` to `jev` (recursion guard);
+ * - JEV failure/timeout/off → fall back to a real default model, never break
+ *   the conversation (#39);
+ * - same session+turn reuses the first judgement (tool round trips);
+ * - every decision goes to the decision ledger with the real provider/model.
+ *
+ * All side effects are injected so the whole adapter is testable offline.
+ */
+export function createJevAdapter(deps) {
+  const {
+    llm, decide, resolveBinding, fallbackBinding,
+    recordUsage, recordDecision, maxChars = 160,
+  } = deps
+  const readConfig = deps.getConfig || (() => deps.cfg)
+  const cache = new Map()
+  const CACHE_TTL = 10 * 60 * 1000
+  const CACHE_MAX = 64
+
+  function firstUserText(messages) {
+    for (const message of Array.isArray(messages) ? messages : []) {
+      if (!message || message.role !== 'user') continue
+      if (typeof message.content === 'string') return message.content
+      if (Array.isArray(message.content)) {
+        return message.content.filter(part => part && part.type === 'text').map(part => part.text || '').join('\n')
+      }
+    }
+    return ''
+  }
+
+  function cacheKey(options, task) {
+    const session = String((options && options.sessionId) || 'no-session')
+    return `${session}::${task.slice(0, maxChars)}`
+  }
+
+  async function choose(options) {
+    const cfg = readConfig()
+    const task = firstUserText(options && options.messages)
+    const key = cacheKey(options, task)
+    const hit = cache.get(key)
+    if (hit && Date.now() - hit.at < CACHE_TTL) return { ...hit.value, cached: true }
+
+    let tier = 'execution'
+    let source = 'jev'
+    let confidence
+    let reason = ''
+    if (!cfg.enabled) {
+      source = 'off'
+      reason = 'switch is OFF'
+    } else {
+      const judged = await decide(task)
+      confidence = judged.confidence
+      reason = judged.reason || ''
+      if (judged.source === 'jev') {
+        tier = judged.tier
+        source = 'jev'
+      } else if (!cfg.jev || !cfg.jev.base) {
+        // 没有配置判定器：本地启发式仍然给出一个 tier，但要如实标注。
+        tier = judged.tier
+        source = 'heuristic'
+      } else {
+        // 判定器挂了：不猜 tier，直接走默认模型。
+        source = 'fallback'
+      }
+    }
+
+    let binding = null
+    if (source === 'jev' || source === 'heuristic') {
+      binding = await resolveBinding(tier === 'decision' ? 'kimi' : 'dsf', { exclude: ['jev'] })
+      if (!binding || !binding.provider || !binding.model || binding.provider === 'jev') {
+        // 白名单里没有可用的真实模型 → 宁可走默认模型，也不许 jev→jev。
+        binding = await fallbackBinding()
+        source = 'fallback'
+        reason = reason || 'no real provider available'
+      }
+    } else {
+      binding = await fallbackBinding()
+    }
+
+    const value = { tier, source, confidence, reason, binding }
+    cache.set(key, { at: Date.now(), value })
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value)
+    return { ...value, cached: false }
+  }
+
+  async function* streamRouted(options) {
+    const startedAt = Date.now()
+    const decided = await choose(options)
+    const binding = decided.binding
+    if (!binding || !binding.provider || !binding.model) {
+      throw new Error('jev/auto: 没有可委派的真实模型（也没有默认模型）')
+    }
+    const target = await llm.prepareCall({ provider: binding.provider, model: binding.model }, options && options.signal)
+    const delegated = {
+      ...options,
+      ...(target.config || {}),
+      provider: binding.provider,
+      model: binding.model,
+    }
+    let firstChunk = true
+    let promptTokens = 0
+    let completionTokens = 0
+    try {
+      for await (const chunk of target.stream(delegated)) {
+        firstChunk = false
+        if (chunk && chunk.type === 'usage' && chunk.usage) {
+          const usage = chunk.usage
+          promptTokens = Number(usage.inputTokens ?? usage.input_tokens ?? usage.promptTokens ?? usage.prompt_tokens) || promptTokens
+          completionTokens = Number(usage.outputTokens ?? usage.output_tokens ?? usage.completionTokens ?? usage.completion_tokens) || completionTokens
+        }
+        yield chunk
+      }
+    } catch (err) {
+      recordUsage({
+        gateway: binding.key || binding.provider, model: binding.model, tool: 'adapter',
+        ok: false, status: 0, ms: Date.now() - startedAt, error: String((err && err.message) || err).slice(0, 160),
+      })
+      throw err
+    }
+    recordUsage({
+      gateway: binding.key || binding.provider, model: binding.model, tool: 'adapter',
+      ok: true, status: 200, ms: Date.now() - startedAt,
+      promptTokens, completionTokens,
+    })
+    recordDecision({
+      task: firstUserText(options && options.messages), tier: decided.tier, asked: 'auto',
+      source: decided.source, choice: decided.tier, confidence: decided.confidence,
+      provider: binding.key || binding.provider, model: binding.model,
+      host: { provider: binding.provider, model: binding.model }, skill: 'none',
+      ok: true, ms: Date.now() - startedAt, pt: promptTokens, ct: completionTokens,
+      escalated: false,
+    })
+    void firstChunk
+  }
+
+  const adapter = {
+    providerInfo(provider) { return { id: provider, name: 'JEV 自动分流' } },
+    providerRetryPolicy() { return undefined },
+    imageRequestPricing() { return undefined },
+    imageRequestTarget(_provider, _model, image) { return { width: image.width, height: image.height, maxBytes: image.bytes } },
+    async listModels(provider) {
+      return provider === 'jev' ? [{ id: 'auto', name: 'JEV 自动分流 · auto' }] : []
+    },
+    async resolveModel(provider, model) {
+      return { provider, id: model, name: model === 'auto' ? 'JEV 自动分流 · auto' : model }
+    },
+    async prepareCall(provider, model) {
+      return { model: await adapter.resolveModel(provider, model), stream: (options) => streamRouted(options) }
+    },
+    stream(options) { return streamRouted(options) },
+    // 测试缝：清缓存 / 读缓存大小
+    __test: { cacheSize: () => cache.size, clear: () => cache.clear() },
+  }
+  return adapter
+}
+
 /* ----------------------------------------------------------------- http */
 
 function chatUrl(base) {
@@ -1458,14 +1622,16 @@ export function apply(ctx, config = {}) {
    * that looks like a strong judge for the decision tier, or like a fast worker
    * for the execution tier, with a stable fallback to the first pair available.
    */
-  async function dshResolve(selected) {
+  async function dshResolve(selected, options = {}) {
+    const exclude = new Set(Array.isArray(options.exclude) ? options.exclude : [])
     const tierCfg = selected === 'kimi' ? cfg.decision : cfg.execution
     const chosen = { key: selected, provider: tierCfg.provider, model: tierCfg.model, auto: false }
-    if (chosen.provider && chosen.model) return chosen
+    if (chosen.provider && chosen.model && !exclude.has(chosen.provider)) return chosen
 
     const catalog = await dshCatalog()
     const pairs = []
     for (const provider of catalog.providers) {
+      if (exclude.has(provider.id)) continue
       for (const model of provider.models) pairs.push({ provider: provider.id, model: model.id })
     }
     if (pairs.length === 0) return chosen
@@ -2531,6 +2697,8 @@ export function apply(ctx, config = {}) {
       const server = sctx.get('webServer')
       if (!server || typeof server.register !== 'function') return () => {}
       const disposers = bridgeRoutes.map(route => server.register(route))
+      registerJevProvider()
+
       return () => {
         for (const dispose of disposers) {
           try { dispose() } catch { /* best effort during teardown */ }
@@ -2538,6 +2706,47 @@ export function apply(ctx, config = {}) {
       }
     }, 'jev-harness: settings bridge')
   })
+
+  /** 默认模型：优先用户当前选择，其次执行层/决策层白名单（永不选 jev）。 */
+  async function fallbackBinding() {
+    const host = dshDefaultSelection()
+    if (host && host.provider && host.model && host.provider !== 'jev') {
+      return { key: host.provider, provider: host.provider, model: host.model }
+    }
+    for (const which of ['dsf', 'kimi']) {
+      const binding = await dshResolve(which, { exclude: ['jev'] })
+      if (binding && binding.provider && binding.model && binding.provider !== 'jev') return binding
+    }
+    return null
+  }
+
+  /**
+   * 注册 `jev/auto` provider（#37）。宿主没有 registerAdapter（或它抛错）时
+   * 只退化到 L1 工具，不改其它行为；递归防护与降级都在 adapter 内部。
+   */
+  function registerJevProvider() {
+    const llm = dshLlm()
+    if (!llm || typeof llm.registerAdapter !== 'function') return false
+    try {
+      const adapter = createJevAdapter({
+        getConfig: () => cfg,
+        llm,
+        decide: (task) => decideTier(task),
+        resolveBinding: (which, options) => dshResolve(which, options),
+        fallbackBinding,
+        recordUsage,
+        recordDecision,
+      })
+      ctx.effect(() => {
+        const handle = llm.registerAdapter(['jev'], adapter)
+        return () => { try { if (typeof handle === 'function') handle() } catch { /* 卸载竞态 */ } }
+      }, 'jev-harness: jev/auto provider adapter')
+      return true
+    } catch (err) {
+      try { ctx.logger?.warn?.(`jev-harness: registerAdapter failed, L1 tools only: ${shortError(err)}`) } catch { /* 日志可选 */ }
+      return false
+    }
+  }
 
   ctx.effect(() => {
     const disposers = tools.map(definition => ctx.tools.register(definition))
