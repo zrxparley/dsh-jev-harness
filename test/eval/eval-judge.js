@@ -171,6 +171,29 @@ async function main() {
   }
 
   console.log(`\n[eval:judge] done. tier ${pct(tierCorrect, n)}, skill ${pct(skillCorrect, n)}. Compare before/after any criteria change.`)
+
+  // #41: persist the result so /stats can surface "golden-set accuracy + when".
+  // Written to <DSH_HOME>/jev-harness-eval.json (default ~/.dsh). No key is ever
+  // written — only accuracy numbers and the timestamp.
+  try {
+    const home = String(process.env.DSH_HOME || '').trim() || path.join(process.env.HOME || '', '.dsh')
+    fs.mkdirSync(home, { recursive: true })
+    const out = {
+      at: new Date().toISOString(),
+      criteriaVersion: set.criteriaVersion,
+      cases: n,
+      tierAccuracy: n ? Number((tierCorrect / n).toFixed(4)) : null,
+      skillAccuracy: n ? Number((skillCorrect / n).toFixed(4)) : null,
+      tierCorrect, skillCorrect,
+      meanTierConfidence: tierConfN ? Number((tierConfSum / tierConfN).toFixed(4)) : null,
+      meanSkillConfidence: skillConfN ? Number((skillConfSum / skillConfN).toFixed(4)) : null,
+      model: MODEL,
+    }
+    fs.writeFileSync(path.join(home, 'jev-harness-eval.json'), JSON.stringify(out, null, 2), { mode: 0o600 })
+    console.log(`[eval:judge] result written to ${path.join(home, 'jev-harness-eval.json')} (read by /stats as judgeAccuracy)`)
+  } catch (e) {
+    console.error(`[eval:judge] could not write result file: ${e.message}`)
+  }
 }
 
 main().catch((e) => die(e.message || String(e)))

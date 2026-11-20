@@ -243,7 +243,8 @@ const USAGE_VERSION = 1
 const USAGE_HOURS = 48
 const USAGE_DAYS = 30
 const USAGE_RECENT = 40
-const DECISIONS_MAX = 12
+const DECISIONS_MAX = 500  // global cap across all sessions (was a flat 12)
+const DECISIONS_PER_SESSION = 50  // #41: keep at least the last 50 decisions per session
 
 /**
  * Bridge token (#26 part 2).
@@ -399,12 +400,16 @@ function readUsage() {
     quarantineUsage('not a ledger object')
     return emptyUsage()
   }
+  // #41 migration: pre-partition records have no session. Backfill them as
+  // 'legacy' on read so history is preserved and per-session views stay honest
+  // (old rows are never misattributed to the current session).
+  const backfill = (row) => (row && typeof row === 'object' && !row.session ? { ...row, session: 'legacy' } : row)
   return {
     version: USAGE_VERSION,
     hours: parsed.hours && typeof parsed.hours === 'object' ? parsed.hours : {},
     days: parsed.days && typeof parsed.days === 'object' ? parsed.days : {},
-    recent: Array.isArray(parsed.recent) ? parsed.recent : [],
-    decisions: Array.isArray(parsed.decisions) ? parsed.decisions : [],
+    recent: Array.isArray(parsed.recent) ? parsed.recent.map(backfill) : [],
+    decisions: Array.isArray(parsed.decisions) ? parsed.decisions.map(backfill) : [],
   }
 }
 
@@ -415,7 +420,19 @@ function trimUsage(usage) {
   const dayKeys = Object.keys(usage.days).sort()
   while (dayKeys.length > USAGE_DAYS) delete usage.days[dayKeys.shift()]
   usage.recent = usage.recent.slice(-USAGE_RECENT)
-  if (Array.isArray(usage.decisions)) usage.decisions = usage.decisions.slice(-DECISIONS_MAX)
+  // #41: keep the last DECISIONS_PER_SESSION decisions per session, then a global cap.
+  if (Array.isArray(usage.decisions) && usage.decisions.length > DECISIONS_PER_SESSION) {
+    const bySession = new Map()
+    for (const d of usage.decisions) {
+      const key = d.session || 'unknown'
+      if (!bySession.has(key)) bySession.set(key, [])
+      bySession.get(key).push(d)
+    }
+    const kept = []
+    for (const list of bySession.values()) kept.push(...list.slice(-DECISIONS_PER_SESSION))
+    kept.sort((a, b) => String(a.t).localeCompare(String(b.t)))
+    usage.decisions = kept.slice(-DECISIONS_MAX)
+  }
   return usage
 }
 
@@ -522,6 +539,10 @@ function recordDecision(entry) {
       usage.decisions.push({
         t: new Date(entry.at || Date.now()).toISOString(),
         task: String(entry.task || '').slice(0, 120),
+        // #41: every decision carries its session so the ledger can be read
+        // per-session. 'unknown' = caller could not supply one (e.g. L1 tools);
+        // 'legacy' = pre-partition records backfilled on read.
+        session: String(entry.session || 'unknown'),
         tier: entry.tier || '',
         asked: entry.asked || 'auto',
         source: entry.source || 'explicit',
@@ -547,7 +568,7 @@ function recordDecision(entry) {
         ct: entry.ct || 0,
         error: entry.error ? String(entry.error).slice(0, 160) : '',
       })
-      if (usage.decisions.length > DECISIONS_MAX) usage.decisions = usage.decisions.slice(-DECISIONS_MAX)
+
     })
   } catch { /* observability must never break a call */ }
 }
@@ -567,6 +588,9 @@ function recordUsage(event) {
       bumpBucket(usage.days[dayKey][event.gateway], event)
       usage.recent.push({
         t: at.toISOString(),
+        // #41: per-session read of the traffic ledger. 'unknown' when the caller
+        // could not supply a session (e.g. L1 tools); 'legacy' on backfill.
+        session: String(event.session || 'unknown'),
         g: event.gateway,
         m: event.model || '',
         tool: event.tool || '',
@@ -592,6 +616,43 @@ function recordUsage(event) {
 }
 
 /** Shape the ledger for the panel: N hourly buckets, totals, recent calls. */
+/**
+ * #41 judge-quality metrics for a set of decisions (+ the recent traffic rows).
+ * All six indicators the issue asks for:
+ *   judgedCount      — decisions that actually went through a judge (not explicit)
+ *   heuristicShare   — fraction of judged decisions answered by the heuristic fallback
+ *   lowConfidenceShare — fraction of judged decisions with confidence < 0.5
+ *   tierDistribution — { decision, execution }
+ *   avgJudgeMs       — mean latency of judge-type gateway calls (judge/classify/skill-pick)
+ *   judgeToExecutionMsRatio — avgJudgeMs / avg execution (real model call) ms
+ */
+function judgeQuality(decisions, recent) {
+  const judged = (decisions || []).filter(d => d && d.source && d.source !== 'explicit')
+  const judgedCount = judged.length
+  const heuristicCount = judged.filter(d => d.source === 'heuristic').length
+  const lowConf = judged.filter(d => Number.isFinite(d.confidence) && d.confidence < 0.5).length
+  const tierDistribution = { decision: 0, execution: 0 }
+  for (const d of judged) {
+    if (d.tier === 'decision') tierDistribution.decision += 1
+    else if (d.tier === 'execution') tierDistribution.execution += 1
+  }
+  const judgeTools = new Set(['judge', 'classify', 'skill-pick'])
+  const judgeMs = (recent || []).filter(r => r && judgeTools.has(r.tool) && Number.isFinite(r.ms)).map(r => r.ms)
+  const execMs = (recent || []).filter(r => r && (r.tool === 'call' || r.tool === 'adapter') && Number.isFinite(r.ms)).map(r => r.ms)
+  const mean = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0)
+  const avgJudgeMs = mean(judgeMs)
+  const avgExecMs = mean(execMs)
+  return {
+    judgedCount,
+    heuristicShare: judgedCount ? heuristicCount / judgedCount : 0,
+    lowConfidenceShare: judgedCount ? lowConf / judgedCount : 0,
+    tierDistribution,
+    avgJudgeMs: Math.round(avgJudgeMs),
+    avgExecutionMs: Math.round(avgExecMs),
+    judgeToExecutionMsRatio: avgExecMs > 0 ? Number((avgJudgeMs / avgExecMs).toFixed(3)) : null,
+  }
+}
+
 function usageReport(hours = 24) {
   const usage = readUsage()
   const pad = pad2
@@ -886,6 +947,7 @@ export function createJevAdapter(deps) {
       recordUsage({
         gateway: binding.key || binding.provider, model: binding.model, tool: 'adapter',
         ok: false, status: 0, ms: Date.now() - startedAt, error: String((err && err.message) || err).slice(0, 160),
+        session: String((options && options.sessionId) || 'unknown'),
       })
       throw err
     }
@@ -893,8 +955,10 @@ export function createJevAdapter(deps) {
       gateway: binding.key || binding.provider, model: binding.model, tool: 'adapter',
       ok: true, status: 200, ms: Date.now() - startedAt,
       promptTokens, completionTokens,
+      session: String((options && options.sessionId) || 'unknown'),
     })
     recordDecision({
+      session: String((options && options.sessionId) || 'unknown'),
       task: lastUserText(options && options.messages), tier: decided.tier, asked: 'auto',
       source: decided.source, choice: decided.tier, confidence: decided.confidence,
       provider: binding.key || binding.provider, model: binding.model,
@@ -1873,6 +1937,7 @@ export function apply(ctx, config = {}) {
             : ''
           const followed = useDsh ? await dshFollowModel(binding) : false
           recordDecision({
+            session: String((exec && (exec.sessionId || (exec.session && exec.session.id))) || 'unknown'),
             task, tier, asked: askedTier, provider: selected, model: servedModel, skill: skillId, ok: true,
             host: useDsh ? { provider: binding.provider, model: binding.model } : null,
             source: judged ? judged.source : 'explicit',
@@ -1899,6 +1964,7 @@ export function apply(ctx, config = {}) {
           })
         } catch (err) {
           recordDecision({
+            session: String((exec && (exec.sessionId || (exec.session && exec.session.id))) || 'unknown'),
             task, tier, asked: askedTier, provider: selected, model: servedModel, skill: skillId, ok: false,
             host: useDsh ? { provider: binding.provider, model: binding.model } : null,
             source: judged ? judged.source : 'explicit',
@@ -2736,10 +2802,44 @@ export function apply(ctx, config = {}) {
         if (!bridgeAllowed(req)) { writeJson(res, 403, { ok: false, error: 'local requests only' }); return }
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
         if (req.method !== 'GET') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
-        const asked = Number(new URL(req.url || '/api/jev-harness/stats', 'http://127.0.0.1').searchParams.get('hours'))
+        const params = new URL(req.url || '/api/jev-harness/stats', 'http://127.0.0.1').searchParams
+        const asked = Number(params.get('hours'))
         const report = usageReport(Number.isFinite(asked) && asked > 0 ? Math.min(168, asked) : 24)
         // 看板的空态卡按 off/setup/ready 分流；unknown 由客户端在请求失败时自己产生。
         report.state = computeBridgeState(refresh(), report.recent[0])
+        // #41: judge-quality metrics — always for the whole machine, and for one
+        // session when ?session= is given (panel shows "this session" vs "all").
+        const usage = readUsage()
+        const allDecisions = usage.decisions || []
+        const allRecent = usage.recent || []
+        report.judgeQuality = judgeQuality(allDecisions, allRecent)
+        const wantSession = params.get('session')
+        if (wantSession) {
+          const sd = allDecisions.filter(d => d.session === wantSession)
+          const sr = allRecent.filter(r => r.session === wantSession)
+          report.session = {
+            id: wantSession,
+            judgeQuality: judgeQuality(sd, sr),
+            decisions: sd.slice(-50).reverse(),
+            recent: sr.slice(-50).reverse(),
+          }
+        }
+        // #41: latest golden-set accuracy from the #10 eval runner (if it has run
+        // and written <DSH_HOME>/jev-harness-eval.json). Includes its timestamp.
+        try {
+          const evalRaw = fs.readFileSync(path.join(dshHome(), 'jev-harness-eval.json'), 'utf8')
+          const evalData = JSON.parse(evalRaw)
+          if (evalData && typeof evalData === 'object') {
+            report.judgeAccuracy = {
+              tierAccuracy: evalData.tierAccuracy ?? null,
+              skillAccuracy: evalData.skillAccuracy ?? null,
+              cases: evalData.cases ?? null,
+              criteriaVersion: evalData.criteriaVersion ?? null,
+              at: evalData.at ?? null,
+              source: 'golden-set (#10)',
+            }
+          }
+        } catch { /* no eval run yet — judgeAccuracy stays absent */ }
         writeJson(res, 200, report)
       },
     },
