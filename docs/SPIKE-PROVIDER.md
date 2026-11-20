@@ -2,7 +2,7 @@
 
 - 状态：调研完成，结论 = **可行**，已由 **#37 实装**
 - 日期：2026-11-19
-- 证据行号以 `index.js` sha256 `a3995b3bff20177b…` 及本机宿主包 `/Applications/DS Bot.app/Contents/Resources/app.asar` 实测为准。行号随提交漂移，引用前重新 grep。
+- 证据行号以 `index.js` sha256 `47b3f0864ad4772fdef78e646e561a65d7911a4031d107789c1a1aa64f066ce9` 及本机宿主包 `/Applications/DS Bot.app/Contents/Resources/app.asar` 实测为准。行号随提交漂移，引用前重新 grep。
 
 > 本文件是 **#5（调研并验证 provider 路线）的收口文档**。它的作用是把「能不能做」回答成「怎么做、做到哪了、还差什么」，并说明 **#5 由 #37 消解**的替代关系。
 

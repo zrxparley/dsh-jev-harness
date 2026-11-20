@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-11-19
 - Issue: #37（前置 #38 合并判定、#39 失败降级）
-- 证据行号以 `index.js` sha256 `a3995b3bff20177b…`（HEAD `84f1f2e`）为准，后续会漂移。
+- 证据行号以 `index.js` sha256 `47b3f0864ad4772fdef78e646e561a65d7911a4031d107789c1a1aa64f066ce9`（行号采集于 commit `0e96932`）为准，后续会漂移。
 
 ## Context
 
