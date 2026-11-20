@@ -72,6 +72,10 @@
 - 目录随插件内置（零网络判定），`refresh` 只发**一个**请求（GitHub 源码 tarball），直接重建 `~/.dsh/jev-harness-skills/catalog.json` 并把 39 份正文写入缓存；之后 `read` 全部命中本地缓存。
 - 上游仓库更新后，刷新即可，不用升级插件。JEV 网关不可用时退回本地关键词匹配。
 
+## 设计边界（约定 vs 保证）
+
+这里的行为并不都一样硬。有些是**代码强制的保证**（合并判定只发一次请求、`jev→jev` 递归被拒绝、降级一定在账本里标注）；有些只是**靠提示词维系的约定**（「harness 接管」开关只有在 agent 真的去调 `harness_call` 时才生效）。把两者混为一谈，是这个项目反复出事的根因。组件图与完整的「约定 vs 保证」表见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；每条决策的理由见 [docs/adr/](docs/adr/)。
+
 ## 迭代路线
 
 需求以 GitHub issue 形式维护，每条都带现状证据（文件/行号）、需求与可验收标准；顺序与取舍理由见 [docs/ROADMAP.md](docs/ROADMAP.md)，跟踪 issue 为 [#12](https://github.com/zrxparley/dsh-jev-harness/issues/12)。

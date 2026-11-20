@@ -70,6 +70,10 @@ With "auto-mount skill" on, `harness_call` asks the JEV judge one more question 
 - The catalog ships bundled (routing costs no network). `refresh` issues exactly one request (the GitHub source tarball), rewrites `~/.dsh/jev-harness-skills/catalog.json` and caches all 39 bodies, so later reads are local.
 - Upstream changes need a refresh, not a plugin upgrade. If the JEV gateway is unreachable, a local keyword matcher takes over.
 
+## Design boundaries (convention vs guarantee)
+
+Not every behaviour here is equally solid. Some are **guaranteed by code** (the merged judge fires exactly one request, recursion `jev→jev` is refused, degradation is always marked in the ledger); others are **conventions held by prompts** (the "harness owns routing" switch only works if the agent actually calls `harness_call`). Confusing the two is how this project kept breaking. The component diagram and the full convention-vs-guarantee table live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the reasoning behind each decision is in [docs/adr/](docs/adr/).
+
 ## Roadmap
 
 Iteration items live as GitHub issues with现状 evidence, requirements and acceptance criteria. The ordering and the reasoning behind it are in [docs/ROADMAP.md](docs/ROADMAP.md), tracked by [#12](https://github.com/zrxparley/dsh-jev-harness/issues/12).

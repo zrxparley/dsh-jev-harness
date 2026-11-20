@@ -49,6 +49,12 @@ Criteria are code, versioned, single-sourced, and guarded.
 5. For a language switch, attach the zh/en comparison numbers — a switch without
    data is not accepted.
 
+## Alternatives
+
+- **Keep criteria inline in `index.js`**: rejected — no versioning, no traceability, adapter and tool judge drift into divergent copies.
+- **Criteria in a JSON/YAML data file instead of a JS module**: workable, but a module lets us freeze objects, derive the active set, and keep zh/en side by side with referential checks in tests; a plain data file would need a loader and schema anyway.
+- **Version only on wording edits, not on added dimensions**: rejected in the addendum — the ledger could not tell a tier-only decision apart from a three-dimension one.
+
 ## Consequences
 
 - Good: criteria changes are auditable, reversible, and measured; adapter and
