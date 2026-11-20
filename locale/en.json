@@ -270,5 +270,16 @@
   "jev.k210": "Startup self-check failed — some entries are not registered",
   "jev.k211": "{p0} {p1}: {p2}",
   "jev.k212": "slot",
-  "jev.k213": "tool"
+  "jev.k213": "tool",
+  "jev.k220": "From environment variable {p0}",
+  "jev.k221": "From the plugin config",
+  "jev.k222": "Saved locally · leave blank to keep",
+  "jev.k223": "Key is set (source unknown)",
+  "jev.k224": "Not set yet",
+  "jev.k225": "Show",
+  "jev.k226": "Hide",
+  "jev.k227": "Clear",
+  "jev.k228": "Confirm clear",
+  "jev.k229": "Cleared. The key field is back to \"not set\".",
+  "jev.k230": "Must start with http:// or https://"
 }
