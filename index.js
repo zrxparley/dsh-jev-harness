@@ -536,6 +536,23 @@ function bumpBucket(target, event) {
  * answered. This is the only place a user can find out "who did this work" —
  * the usage ledger alone only knows gateway counts.
  */
+/**
+ * #36：判定器返回的 probabilities 不能原样落库（可能很大，也不该无界头字段）。
+ * 只保留最多 8 项、键名 ≤24 字符、值必须是有限数字；其它一律丢弃。
+ * 它只是模型分数，不含 task 正文、不含任何密钥。
+ */
+function sanitizeProbabilities(raw) {
+  if (!raw || typeof raw !== 'object') return undefined
+  const entries = Array.isArray(raw) ? raw.map((value, index) => [String(index), value]) : Object.entries(raw)
+  const kept = {}
+  for (const [key, value] of entries.slice(0, 8)) {
+    const n = Number(value)
+    if (!Number.isFinite(n)) continue
+    kept[String(key).slice(0, 24)] = n
+  }
+  return Object.keys(kept).length ? kept : undefined
+}
+
 function recordDecision(entry) {
   try {
     mutateUsage((usage) => {
@@ -552,6 +569,8 @@ function recordDecision(entry) {
         source: entry.source || 'explicit',
         choice: entry.choice || entry.tier || '',
         confidence: Number.isFinite(entry.confidence) ? Number(entry.confidence) : undefined,
+        // #36: judge scores for the tier choice, bounded by sanitizeProbabilities.
+        probabilities: sanitizeProbabilities(entry.probabilities),
         provider: entry.provider || '',
         model: entry.model || '',
         host: entry.host && entry.host.provider && entry.host.model
@@ -990,6 +1009,7 @@ export function createJevAdapter(deps) {
       session: String((options && options.sessionId) || 'unknown'),
       task: lastUserText(options && options.messages), tier: decided.tier, asked: 'auto',
       source: decided.source, choice: decided.tier, confidence: decided.confidence,
+      probabilities: decided.probabilities,
       provider: binding.key || binding.provider, model: binding.model,
       host: { provider: binding.provider, model: binding.model }, skill: 'none',
       ok: true, ms: Date.now() - startedAt, pt: promptTokens, ct: completionTokens,
@@ -1032,6 +1052,70 @@ function chatUrl(base) {
 function modelsUrl(base) {
   const u = chatUrl(base)
   return u ? u.replace(/\/chat\/completions$/i, '/models') : ''
+}
+
+/* ------------------------------------------------- circuit breaker (#3) */
+
+/**
+ * Execution-layer circuit breaker, per gateway provider. Process-level state:
+ * 3 consecutive failures on a provider opens a 10-minute cooldown during which
+ * that provider is skipped WITHOUT spending a timeout. After the cooldown a
+ * single trial is allowed (half-open); success closes the breaker again.
+ *
+ * This is for EXECUTION gateways (kimi/dsf), separate from the judge-layer
+ * degradation in #39 (which is about the JEV judge itself being unreachable).
+ */
+const BREAKER_THRESHOLD = 3
+const BREAKER_COOLDOWN_MS = 10 * 60 * 1000
+const gatewayBreakers = new Map()
+
+function breakerOf(provider) {
+  if (!gatewayBreakers.has(provider)) gatewayBreakers.set(provider, { fails: 0, cooldownUntil: 0 })
+  return gatewayBreakers.get(provider)
+}
+
+/** Remaining cooldown ms for a provider (0 if it is available for a call). */
+function breakerCooldownMs(provider) {
+  const b = breakerOf(provider)
+  return Math.max(0, b.cooldownUntil - Date.now())
+}
+
+function breakerRecordSuccess(provider) {
+  const b = breakerOf(provider)
+  b.fails = 0
+  b.cooldownUntil = 0
+}
+
+/** Record a failure; returns true if this failure opened the cooldown. */
+function breakerRecordFailure(provider) {
+  const b = breakerOf(provider)
+  b.fails += 1
+  if (b.fails >= BREAKER_THRESHOLD) {
+    b.cooldownUntil = Date.now() + BREAKER_COOLDOWN_MS
+    return true
+  }
+  return false
+}
+
+/** Test seam: reset all breakers between cases. */
+function __resetBreakers() { gatewayBreakers.clear() }
+
+/* ------------------------------------------------- tiered timeouts (#3) */
+
+/**
+ * Per-operation timeouts, each overridable from the panel (store) with a sane
+ * default. probe is short (a dead gateway must not block 120s), execution is
+ * mid, decision/review are long (reasoning models).
+ */
+function timeoutFor(kind, cfg) {
+  const store = cfg && cfg.timeouts ? cfg.timeouts : {}
+  switch (kind) {
+    case 'probe': return num(store.probe, 10000)
+    case 'execution': return num(store.execution, 45000)
+    case 'review': return num(store.review, 120000)
+    case 'decision':
+    default: return num(store.decision, 120000)
+  }
 }
 
 function combineSignal(cfgTimeout, execSignal) {
@@ -1400,6 +1484,7 @@ export function apply(ctx, config = {}) {
             source: 'jev',
             choice: tier,
             confidence: Number.isFinite(confidence) ? confidence : undefined,
+            probabilities: sanitizeProbabilities(answer.probabilities),
             model: body.model || cfg.jev.model,
             reason: `jev ${body.model || cfg.jev.model} choice=${tier}` +
               (Number.isFinite(confidence) ? ` (confidence ${confidence.toFixed(2)})` : ''),
@@ -1746,6 +1831,9 @@ export function apply(ctx, config = {}) {
         skill,
         difficulty,
         confidence: Number.isFinite(tierConf) ? tierConf : undefined,
+        // #36: the merged judge path carries the same tier probabilities as
+        // decideTier(); without this the default path would record none.
+        probabilities: sanitizeProbabilities(tierAns && tierAns.probabilities),
         model: body.model || cfg.jev.model,
         reason: `jev ${body.model || cfg.jev.model} tier=${tier} skill=${skill} difficulty=${difficulty}` +
           (Number.isFinite(tierConf) ? ` (confidence ${tierConf.toFixed(2)})` : ''),
@@ -2042,6 +2130,7 @@ export function apply(ctx, config = {}) {
             source: judged ? judged.source : 'explicit',
             choice: judged ? judged.choice : tier,
             confidence: judged ? judged.confidence : undefined,
+            probabilities: judged ? judged.probabilities : undefined,
             difficulty: judged ? judged.difficulty : undefined,
             escalated,
             skillSource,
@@ -2069,6 +2158,7 @@ export function apply(ctx, config = {}) {
             source: judged ? judged.source : 'explicit',
             choice: judged ? judged.choice : tier,
             confidence: judged ? judged.confidence : undefined,
+            probabilities: judged ? judged.probabilities : undefined,
             difficulty: judged ? judged.difficulty : undefined,
             escalated,
             skillSource,
