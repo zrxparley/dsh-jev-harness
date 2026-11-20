@@ -143,3 +143,37 @@ test("#4: ledger skill is 'none' (not empty string) when the judge picks none", 
     stub.restore(); removeHome(home)
   }
 })
+
+const STATUS = '/api/jev-harness/status'
+const SAVE = '/api/jev-harness/save'
+
+test('#4 F1: /status echoes lowConfidenceThreshold (default 0.6)', async () => {
+  const home = makeHome('conf-status')
+  writeStore(home)
+  const stub = stubFetch((url, init) => chatStub(url))
+  try {
+    const { routes } = await boot({ home })
+    const status = (await callRoute(routes, STATUS, { url: STATUS })).body
+    assert.equal(status.lowConfidenceThreshold, 0.6, '/status must echo the threshold so the panel can render it')
+  } finally {
+    stub.restore(); removeHome(home)
+  }
+})
+
+test('#4 F1: POST /save persists the threshold and /status reflects it', async () => {
+  const home = makeHome('conf-save')
+  writeStore(home)
+  const stub = stubFetch((url, init) => chatStub(url))
+  try {
+    const { routes } = await boot({ home })
+    const saved = (await callRoute(routes, SAVE, { method: 'POST', url: SAVE, body: { lowConfidenceThreshold: 0.85 } })).body
+    assert.equal(saved.lowConfidenceThreshold, 0.85, 'save response echoes the new threshold')
+    // re-read /status: the value must have persisted through writeStore
+    const status = (await callRoute(routes, STATUS, { url: STATUS })).body
+    assert.equal(status.lowConfidenceThreshold, 0.85, 'persisted threshold survives a fresh /status read')
+    const onDisk = readJsonFile(path.join(home, 'jev-harness.json'))
+    assert.equal(onDisk.lowConfidenceThreshold, 0.85, 'threshold is written to the store file')
+  } finally {
+    stub.restore(); removeHome(home)
+  }
+})

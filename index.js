@@ -128,6 +128,12 @@ function writeStore(patch) {
       next[key] = flag
       continue
     }
+    if (STORE_NUMBERS.has(key)) {
+      // #4: numeric fields (threshold) must persist as numbers, not stringified away.
+      const v = Number(patch[key])
+      if (Number.isFinite(v)) next[key] = v
+      continue
+    }
     const value = typeof patch[key] === 'string' ? patch[key].trim() : ''
     if (value === '') delete next[key]
     else next[key] = value
@@ -2322,6 +2328,8 @@ export function apply(ctx, config = {}) {
       version: PACKAGE_VERSION,
       enabled: live.enabled,
       state,
+      // #4: echo the judge escalation threshold so the panel input shows the real value.
+      lowConfidenceThreshold: live.lowConfidenceThreshold,
       file: storePath(),
       gateways: { jev: view('jev'), kimi: view('kimi'), dsf: view('dsf') },
       tiers: { decision: 'kimi', execution: 'dsf' },
@@ -2574,6 +2582,12 @@ export function apply(ctx, config = {}) {
         if (Object.prototype.hasOwnProperty.call(body, 'enabled')) patch.enabled = body.enabled
         if (Object.prototype.hasOwnProperty.call(body, 'skillsAuto')) patch.skillsAuto = body.skillsAuto
         if (typeof body.followModel === 'boolean') patch.followModel = body.followModel
+        // #4: accept the judge escalation threshold (0-1 number).
+        if (body.lowConfidenceThreshold !== undefined) {
+          const v = Number(body.lowConfidenceThreshold)
+          if (!Number.isFinite(v) || v < 0 || v > 1) { writeJson(res, 400, { ok: false, error: 'lowConfidenceThreshold must be a number between 0 and 1' }); return }
+          patch.lowConfidenceThreshold = v
+        }
         if (typeof body.routeMode === 'string') {
           const mode = body.routeMode.trim().toLowerCase()
           if (mode !== 'dsh' && mode !== 'direct') { writeJson(res, 400, { ok: false, error: 'routeMode must be dsh or direct' }); return }

@@ -173,3 +173,18 @@ test('未配置网关（setup）时首屏看不到「刷新技能目录」', { s
     client.stub.restore()
   }
 })
+
+test('#4 F1: 设置表单里有「判定置信度阈值」数值输入', { skip }, () => {
+  const client = bootClient()
+  try {
+    const HarnessConfig = client.loaded.exports.__test.HarnessConfig
+    const html = render(reactPkgs, HarnessConfig, { __initialState: 'ready' })
+    const text = visibleText(html)
+    assert.ok(text.includes('判定置信度阈值'), `设置表单应显示阈值标签，实际片段：${text.slice(0, 300)}`)
+    assert.ok(text.includes('保存阈值'), '应有「保存阈值」按钮')
+    // the numeric input must be present with the current value
+    assert.ok(/type="number"/.test(html) || /type: 'number'/.test(html) || html.includes('number'), '应有 number 类型输入框')
+  } finally {
+    client.stub.restore()
+  }
+})
