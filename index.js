@@ -239,8 +239,33 @@ function usagePath() {
   return path.join(home, 'jev-harness-usage.json')
 }
 
+const pad2 = (n) => String(n).padStart(2, '0')
+
+/** 本地日键：与小时桶同一套本地时间，禁止 toISOString().slice(0,10)（#14）。 */
+export function localDayKey(date = new Date()) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`
+}
+
+/** 本地小时键。 */
+export function localHourKey(date = new Date()) {
+  return `${localDayKey(date)}T${pad2(date.getHours())}`
+}
+
+/** 按本地日历回退/前进若干天：用 setDate，跨 DST 不会差一小时。 */
+export function addLocalDays(date, days) {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
 function emptyBucket() {
-  return { calls: 0, ok: 0, fail: 0, promptTokens: 0, completionTokens: 0, ms: 0 }
+  return {
+    calls: 0, ok: 0, fail: 0,
+    promptTokens: 0, completionTokens: 0,
+    // ms 只累计「真正回答」的调用；probe 单独记，平均耗时默认不含探测（#14）。
+    ms: 0, probeCalls: 0, probeMs: 0,
+    answered: 0, unanswered: 0, notSent: 0,
+  }
 }
 
 function emptyUsage() {
@@ -415,12 +440,21 @@ function mutateUsage(mutate) {
 
 function bumpBucket(target, event) {
   if (!target) return
+  const isProbe = event.tool === 'probe'
   target.calls = (target.calls || 0) + 1
   if (event.ok) target.ok = (target.ok || 0) + 1
   else target.fail = (target.fail || 0) + 1
   target.promptTokens = (target.promptTokens || 0) + (event.promptTokens || 0)
   target.completionTokens = (target.completionTokens || 0) + (event.completionTokens || 0)
-  target.ms = (target.ms || 0) + (event.ms || 0)
+  if (isProbe) {
+    target.probeCalls = (target.probeCalls || 0) + 1
+    target.probeMs = (target.probeMs || 0) + (event.ms || 0)
+  } else {
+    target.ms = (target.ms || 0) + (event.ms || 0)
+  }
+  if (event.sent === false) target.notSent = (target.notSent || 0) + 1
+  else if (event.ok && event.answered === false) target.unanswered = (target.unanswered || 0) + 1
+  else if (event.ok) target.answered = (target.answered || 0) + 1
 }
 
 /**
@@ -461,9 +495,8 @@ function recordDecision(entry) {
 function recordUsage(event) {
   try {
     const at = new Date(event.at || Date.now())
-    const pad = (n) => String(n).padStart(2, '0')
-    const hourKey = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}`
-    const dayKey = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+    const hourKey = localHourKey(at)
+    const dayKey = localDayKey(at)
     mutateUsage((usage) => {
       if (!usage.hours[hourKey]) usage.hours[hourKey] = {}
       if (!usage.days[dayKey]) usage.days[dayKey] = {}
@@ -477,6 +510,10 @@ function recordUsage(event) {
         m: event.model || '',
         tool: event.tool || '',
         ok: Boolean(event.ok),
+        // 看板据此区分「未发出 / 失败 / 无回答 / 成功」（#14）。
+        sent: event.sent !== false,
+        answered: event.answered !== false,
+        kind: event.kind || (event.sent === false ? 'not-sent' : event.ok ? (event.answered === false ? 'no-answer' : 'ok') : 'fail'),
         status: event.status || 0,
         ms: Math.round(event.ms || 0),
         pt: event.promptTokens || 0,
@@ -490,7 +527,7 @@ function recordUsage(event) {
 /** Shape the ledger for the panel: N hourly buckets, totals, recent calls. */
 function usageReport(hours = 24) {
   const usage = readUsage()
-  const pad = (n) => String(n).padStart(2, '0')
+  const pad = pad2
   const dayGrain = hours > USAGE_HOURS
   const buckets = []
   const source = (key) => (dayGrain ? usage.days[key] : usage.hours[key]) || {}
@@ -502,7 +539,8 @@ function usageReport(hours = 24) {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     for (let i = days - 1; i >= 0; i--) {
-      const at = new Date(today.getTime() - i * 86400000)
+      // setDate 而不是 getTime()-86400000：DST 那天不会错位（#14）。
+      const at = addLocalDays(today, -i)
       const key = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
       const row = { key, label: `${pad(at.getMonth() + 1)}/${pad(at.getDate())}`, day: `${pad(at.getMonth() + 1)}/${pad(at.getDate())}`, gateways: {} }
       const from = source(key)
@@ -548,6 +586,11 @@ function usageReport(hours = 24) {
       total.promptTokens += raw.promptTokens || 0
       total.completionTokens += raw.completionTokens || 0
       total.ms += raw.ms || 0
+      total.probeCalls += raw.probeCalls || 0
+      total.probeMs += raw.probeMs || 0
+      total.answered += raw.answered || 0
+      total.unanswered += raw.unanswered || 0
+      total.notSent += raw.notSent || 0
     }
     total.ok = total.calls - total.fail
     totals[gateway] = {
@@ -557,12 +600,20 @@ function usageReport(hours = 24) {
       promptTokens: total.promptTokens,
       completionTokens: total.completionTokens,
       tokens: total.promptTokens + total.completionTokens,
-      avgMs: total.calls > 0 ? Math.round(total.ms / total.calls) : 0,
+      answered: total.answered,
+      unanswered: total.unanswered,
+      notSent: total.notSent,
+      probeCalls: total.probeCalls,
+      // 平均耗时排除探测：分母是「真正回答过的调用」，分子不含 probe 的 ms。
+      avgMs: (() => {
+        const answeredCalls = total.calls - total.probeCalls
+        return answeredCalls > 0 ? Math.round(total.ms / answeredCalls) : 0
+      })(),
     }
     worst = Math.max(worst, total.calls)
   }
 
-  const today = usage.days[new Date().toISOString().slice(0, 10)] || {}
+  const today = usage.days[localDayKey(new Date())] || {}
   const todayTotals = {}
   for (const gateway of ['jev', 'kimi', 'dsf']) {
     const bucket = today[gateway] || emptyBucket()
@@ -570,6 +621,9 @@ function usageReport(hours = 24) {
       calls: bucket.calls || 0,
       fail: bucket.fail || 0,
       tokens: (bucket.promptTokens || 0) + (bucket.completionTokens || 0),
+      answered: bucket.answered || 0,
+      unanswered: bucket.unanswered || 0,
+      notSent: bucket.notSent || 0,
     }
   }
   return {
@@ -677,7 +731,20 @@ async function listGatewayModels(route, cfg2) {
 
 async function chat(route, messages, opts, cfg, exec) {
   const url = chatUrl(route.base)
-  if (!url) throw new Error(`no base URL configured for ${opts.provider}; set it in plugin settings or ${opts.provider.toUpperCase()}_BASE_URL`)
+  if (!url) {
+    // 请求根本没发出去，也要留下一条可见记录（#14：状态「未发出」）。
+    recordUsage({
+      gateway: opts.provider,
+      model: route.model,
+      tool: opts.tool || 'call',
+      ok: false,
+      sent: false,
+      status: 0,
+      ms: 0,
+      error: '未发出：没有配置网关地址',
+    })
+    throw new Error(`no base URL configured for ${opts.provider}; set it in plugin settings or ${opts.provider.toUpperCase()}_BASE_URL`)
+  }
   const temperature = Number.isFinite(opts.temperature) ? opts.temperature : cfg.temperature
 
   let startedAt = 0
@@ -737,18 +804,20 @@ async function chat(route, messages, opts, cfg, exec) {
   let body
   try { body = JSON.parse(raw) } catch { throw new Error(`non-JSON response from ${opts.provider}: ${raw.slice(0, 300)}`) }
   const usageTotals = body?.usage || {}
+  const message = body?.choices?.[0]?.message || {}
+  const text = message.content
+  // HTTP 200 不等于答出内容：空正文记 ok+answered:false，看板显示「无回答」（#14）。
   recordUsage({
     gateway: opts.provider,
     model: route.model,
     tool: opts.tool || 'call',
     ok: true,
+    answered: typeof text === 'string' && text.trim() !== '',
     status: res.status,
     ms: Date.now() - startedAt,
     promptTokens: Number(usageTotals.prompt_tokens) || 0,
     completionTokens: Number(usageTotals.completion_tokens) || 0,
   })
-  const message = body?.choices?.[0]?.message || {}
-  const text = message.content
   const reasoning = message.reasoning_content || message.reasoning
   const usage = body?.usage || {}
   const details = usage.completion_tokens_details || {}
@@ -770,6 +839,10 @@ async function chat(route, messages, opts, cfg, exec) {
  */
 async function dshChat(llm, binding, opts, cfg, exec) {
   if (!llm || typeof llm.prepareCall !== 'function') {
+    recordUsage({
+      gateway: binding.key, model: binding.model, tool: opts.tool || 'call',
+      ok: false, sent: false, status: 0, ms: 0, error: '未发出：该宿主没有 llm 服务',
+    })
     throw new Error('DSH model service (llm) is unavailable — switch the route to 直连 or configure a gateway')
   }
   const startedAt = Date.now()
@@ -816,7 +889,8 @@ async function dshChat(llm, binding, opts, cfg, exec) {
     const trimmed = text.trim()
     const reasoningTokens = reasoningChars > 0 ? Math.ceil(reasoningChars / 3) : 0
     recordUsage({
-      gateway: binding.key, model: binding.model, tool: opts.tool || 'call', ok: true, status: 200,
+      gateway: binding.key, model: binding.model, tool: opts.tool || 'call', ok: true,
+      answered: trimmed !== '', status: 200,
       ms: Date.now() - startedAt, promptTokens: inputTokens, completionTokens: outputTokens,
     })
     return {
