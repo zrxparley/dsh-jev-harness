@@ -533,6 +533,9 @@ function recordDecision(entry) {
           ? { provider: String(entry.host.provider), model: String(entry.host.model) }
           : null,
         skill: entry.skill || 'none',  // #4: distinguish 'judged none' from 'not asked' — never an ambiguous empty string
+        // #39: tier degradation and skill degradation are separate facts.
+        skillSource: entry.skillSource || '',
+        skillError: entry.skillError ? String(entry.skillError).slice(0, 160) : '',
         criteriaVersion: entry.criteriaVersion || CRITERIA_VERSION,
         difficulty: entry.difficulty || '',
         escalated: entry.escalated === true,  // #4: was this call upgraded to decision on low confidence?
@@ -1395,7 +1398,7 @@ export function apply(ctx, config = {}) {
   /** Token-overlap fallback used when the JEV judge is unreachable. */
   function heuristicSkill(task) {
     const best = scoreSkills(task)[0]
-    if (!best || best.score < 6) return { id: SKILL_NONE, confidence: 0, reason: 'no skill matched the wording' }
+    if (!best || best.score < 6) return { id: SKILL_NONE, confidence: 0, source: 'heuristic', reason: 'no skill matched the wording' }
     return { id: best.skill.id, confidence: 0, reason: `local keyword match on ${best.skill.id}` }
   }
 
@@ -1469,18 +1472,22 @@ export function apply(ctx, config = {}) {
         return {
           id: choice,
           confidence: Number.isFinite(confidence) ? confidence : 0,
+          source: 'jev',
           reason: `jev ${body.model || cfg2.jev.model} choice=${choice}` +
             (Number.isFinite(confidence) ? ` (confidence ${confidence.toFixed(2)})` : ''),
         }
       }
-      return heuristicSkill(task)
+      return { ...heuristicSkill(task), source: 'heuristic', error: 'JEV 返回了不可用的 skill' }
     } catch (err) {
       recordUsage({
         gateway: 'jev', model: cfg2.jev.model, tool: 'skill-pick', ok: false, status: 0,
         ms: Date.now() - startedAt, error: shortError(err),
       })
       const fallback = heuristicSkill(task)
-      return { ...fallback, reason: `jev skill judge failed (${shortError(err)}); ${fallback.reason}` }
+      return {
+        ...fallback, source: 'heuristic', error: shortError(err),
+        reason: `jev skill judge failed (${shortError(err)}); ${fallback.reason}`,
+      }
     }
   }
 
@@ -1770,6 +1777,8 @@ export function apply(ctx, config = {}) {
         let mounted = ''
         let skillNote = ''
         let skillId = ''
+        let skillSource = 'off'
+        let skillError = ''
         const asked = typeof args.skill === 'string' ? args.skill.trim() : ''
         const wantSkill = asked === '' || asked === 'auto' ? (cfg.skills.auto ? 'auto' : 'off') : asked
         // #38: when BOTH tier and skill are auto, do a single merged judge request
@@ -1786,6 +1795,7 @@ export function apply(ctx, config = {}) {
         }
         if (merged) {
           // skill already decided by the merged judge; mount it without a 2nd request.
+          skillSource = judged.source === 'jev' ? 'jev' : 'heuristic'
           if (judged.skill && judged.skill !== SKILL_NONE) {
             try {
               const skill = skillById(judged.skill)
@@ -1805,7 +1815,9 @@ export function apply(ctx, config = {}) {
           try {
             const chosen = wantSkill === 'auto'
               ? await pickSkill(task, args.context, cfg, exec)
-              : { id: wantSkill, confidence: 0, reason: 'explicit skill' }
+              : { id: wantSkill, confidence: 0, source: 'explicit', reason: 'explicit skill' }
+            skillSource = chosen.source || (wantSkill === 'auto' ? 'heuristic' : 'explicit')
+            skillError = chosen.error ? String(chosen.error) : ''
             if (chosen.id && chosen.id !== SKILL_NONE) {
               const skill = skillById(chosen.id)
               if (skill) {
@@ -1868,6 +1880,8 @@ export function apply(ctx, config = {}) {
             confidence: judged ? judged.confidence : undefined,
             difficulty: judged ? judged.difficulty : undefined,
             escalated,
+            skillSource,
+            skillError,
             degraded: Boolean(judged && judged.degraded),
             error: judged && judged.degraded ? String(judged.error || '').slice(0, 160) : '',
             ms: Date.now() - routedAt,
@@ -1892,6 +1906,8 @@ export function apply(ctx, config = {}) {
             confidence: judged ? judged.confidence : undefined,
             difficulty: judged ? judged.difficulty : undefined,
             escalated,
+            skillSource,
+            skillError,
             degraded: Boolean(judged && judged.degraded),
             ms: Date.now() - routedAt,
             error: shortError(err),

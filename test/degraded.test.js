@@ -118,6 +118,61 @@ test('「判不出来就用最贵」被禁止：adapter 降级走默认（廉价
   assert.match(String(decisions[0].error), /500/)
 })
 
+test('技能降级与 tier 降级分开入账：pickSkill 回退写 skillSource=heuristic + skillError', async () => {
+  const home = makeHome('degraded-skill')
+  writeStore(home, { timeoutMs: 2000, judgeTimeoutMs: 120 })
+  const stub = stubFetch((url, init) => {
+    if (String(url).includes('/systemone')) {
+      return new Promise((_resolve, reject) => {
+        const signal = init && init.signal
+        if (!signal) return
+        signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true })
+      })
+    }
+    if (String(url).includes('/chat/completions')) {
+      return jsonResponse({ choices: [{ message: { content: '答出来了' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } })
+    }
+    return undefined
+  })
+  try {
+    const { tools, routes } = await boot({ home })
+    // tier 显式、skill auto：走 pickSkill，不触发 merged
+    const result = await tools.get('harness_call').execute({ task: '评审这个方案', tier: 'execution', skill: 'auto' }, {})
+    assert.equal(result.ok, true)
+    const decision = await lastDecision(routes)
+    assert.equal(decision.skillSource, 'heuristic', '技能降级必须在账本里可见')
+    assert.ok(String(decision.skillError).length > 0, '技能降级要带原因')
+    assert.equal(decision.degraded, false, 'tier 没有降级，不许混成一个字段')
+  } finally {
+    stub.restore()
+    removeHome(home)
+  }
+})
+
+test('技能由 JEV 判定时 skillSource=jev', async () => {
+  const home = makeHome('degraded-skill-ok')
+  writeStore(home)
+  const stub = stubFetch((url) => {
+    if (String(url).includes('/systemone')) {
+      return jsonResponse({ model: 'jev', answers: { skill: { choice: 'none', confidence: 0.9 } }, usage: { input_tokens: 1, output_tokens: 1 } })
+    }
+    if (String(url).includes('/chat/completions')) {
+      return jsonResponse({ choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } })
+    }
+    return undefined
+  })
+  try {
+    const { tools, routes } = await boot({ home })
+    await tools.get('harness_call').execute({ task: '评审', tier: 'execution', skill: 'auto' }, {})
+    const decision = await lastDecision(routes)
+    assert.equal(decision.skillSource, 'jev')
+    assert.equal(decision.skillError, '')
+  } finally {
+    stub.restore()
+    removeHome(home)
+  }
+})
+
 test('面板文案：JEV 未参与 / 已降级 / 调用失败，不许绿色成功', { skip: requireReactOrSkip().skip }, () => {
   const { pkgs } = requireReactOrSkip()
   const loaded = loadClient(pkgs)
