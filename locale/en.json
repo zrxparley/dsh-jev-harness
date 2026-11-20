@@ -281,5 +281,13 @@
   "jev.k227": "Clear",
   "jev.k228": "Confirm clear",
   "jev.k229": "Cleared. The key field is back to \"not set\".",
-  "jev.k230": "Must start with http:// or https://"
+  "jev.k230": "Must start with http:// or https://",
+  "jev.k240": "{p0}/{p1} gateways reachable.",
+  "jev.k241": "{p0}/{p1} reachable · {p2} unavailable — turning it on now will fail.",
+  "jev.k242": "Testing {p0} ({p1}/{p2})…",
+  "jev.k243": "0/{p0} reachable — turning it on now will fail.",
+  "jev.k244": "Cancelled — no further gateways were probed.",
+  "jev.k245": "(tested with the values currently in the form, not the saved ones)",
+  "jev.k246": "Starting probe…",
+  "jev.k247": "Cancel"
 }

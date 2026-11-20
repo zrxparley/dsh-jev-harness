@@ -2930,8 +2930,17 @@ export function apply(ctx, config = {}) {
   /* ------------------------------------------------------- settings bridge */
 
   /** One gateway's reachability and the model ids it actually serves. */
-  async function probeRoute(key) {
-    const route = cfg[key]
+  /**
+   * #19: 探测单个网关。override 是「面板上当前填的值」，只用于这一次探测，
+   * 不写 store —— 用户刚粘贴密钥就点测试，测的必须是他眼前那份，不是已保存那份。
+   */
+  async function probeRoute(key, override) {
+    const pickText = (value, fallback) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback)
+    const route = {
+      base: pickText(override && override.baseUrl, cfg[key].base),
+      key: pickText(override && override.apiKey, cfg[key].key),
+      model: pickText(override && override.model, cfg[key].model),
+    }
     const url = modelsUrl(route.base)
     if (!url) return { key, ok: false, detail: 'NOT CONFIGURED (no base URL)', models: [] }
     const startedAt = Date.now()
@@ -3594,9 +3603,20 @@ path: '/api/jev-harness/export',
         if (!bridgeAuthorized(req)) { writeJson(res, 401, { ok: false, error: 'bridge token required' }); return }
         if (req.method !== 'POST') { writeJson(res, 405, { ok: false, error: 'method not allowed' }); return }
         refresh()
+        const body = await readJsonBody(req, 16384) || {}
+        const wanted = typeof body.gateway === 'string' && ['jev', 'kimi', 'dsf'].includes(body.gateway) ? body.gateway : ''
+        const overrides = body.overrides && typeof body.overrides === 'object' ? body.overrides : {}
+        const keys = wanted ? [wanted] : ['jev', 'kimi', 'dsf']
         const results = []
-        for (const key of ['jev', 'kimi', 'dsf']) results.push(await probeRoute(key))
-        writeJson(res, 200, { ok: results.some(entry => entry.ok), results })
+        for (const key of keys) results.push(await probeRoute(key, overrides[key]))
+        // #19: ok 的旧语义保留（至少一个通），但客户端改用计数分级；total 让「1/3」可算。
+        writeJson(res, 200, {
+          ok: results.some(entry => entry.ok),
+          results,
+          total: wanted ? 3 : results.length,
+          partial: Boolean(wanted),
+          usedOverrides: Object.keys(overrides).length > 0,
+        })
       },
     },
   ]
