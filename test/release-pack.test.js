@@ -81,3 +81,40 @@ test('打包清单与实际引用一致：client 里没有对未打包文件的 
   }
   assert.ok(pkg.files.includes('lib/client.js'))
 })
+
+test('打包清单覆盖 index.js 的全部相对 import：解包后 index.js 能直接 import', () => {
+  // 红点（v2.0.0 首发）：files 白名单漏了 criteria.js 与 lib/gateway-http.js，
+  // 打出来的包一 import index.js 就 ERR_MODULE_NOT_FOUND。sync 的白名单是对的，
+  // 坏的是 npm 打包清单 —— 两套白名单必须各自守住。
+  const files = packFiles()
+  const source = fs.readFileSync(path.join(REPO, 'index.js'), 'utf8')
+  const specs = [...source.matchAll(/^import\s[^'"]*['"](\.[^'"]+)['"]/gm)].map((match) => match[1])
+  assert.ok(specs.length >= 3, `解析到的相对 import 只有 ${specs.length} 个，正则可能失效`)
+  for (const spec of specs) {
+    const rel = path.posix.normalize(spec.replace(/^\.\//, ''))
+    assert.ok(files.includes(rel), `index.js import 了 ${spec}，但 package.json files 里没有 ${rel}`)
+  }
+
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-pack-import-'))
+  const tarball = path.join(stage, 'pkg.tgz')
+  const unpacked = path.join(stage, 'unpacked')
+  fs.mkdirSync(unpacked)
+  try {
+    const tar = spawnSync('tar', ['-czf', tarball, ...files], { cwd: REPO, encoding: 'utf8' })
+    assert.equal(tar.status, 0, `tar 打包失败：${tar.stderr || ''}`)
+    const extract = spawnSync('tar', ['-xzf', tarball, '-C', unpacked], { encoding: 'utf8' })
+    assert.equal(extract.status, 0, `tar 解包失败：${extract.stderr || ''}`)
+
+    // 子进程里真 import 一次：漏文件会在这里变成 ERR_MODULE_NOT_FOUND，而不是上线才炸。
+    const entry = path.join(unpacked, 'index.js')
+    const load = spawnSync(process.execPath, ['-e', `import(${JSON.stringify(entry)}).then(() => console.log('ok'))`], {
+      cwd: unpacked,
+      encoding: 'utf8',
+      env: { ...process.env, DSH_HOME: path.join(stage, 'home') },
+    })
+    assert.equal(load.status, 0, `解包后的 index.js 加载失败：${load.stderr || load.stdout}`)
+    assert.match(load.stdout, /ok/)
+  } finally {
+    fs.rmSync(stage, { recursive: true, force: true })
+  }
+})

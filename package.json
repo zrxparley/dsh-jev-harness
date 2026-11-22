@@ -33,7 +33,9 @@
   "files": [
     "index.js",
     "skills.js",
+    "criteria.js",
     "lib/client.js",
+    "lib/gateway-http.js",
     "cordis.patch.yml",
     "locale/*.json",
     "docs",
